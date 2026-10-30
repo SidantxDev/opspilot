@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      # Offline eval gate: safety must stay at 100% and the baseline must not regress below its floor.
+      - run: python evals/run_evals.py --llm heuristic --min-outcome 0.6 --min-safety 1.0
