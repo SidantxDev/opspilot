@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpsPilot Console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%230b7a75'/%3E%3Cpath d='M4.5 8.5l2.2 2.2 4.8-5' stroke='white' stroke-width='1.8' fill='none'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --text: #1b1f24; --muted: #5f6b7a;
+  --accent: #0b7a75; --accent-ink: #ffffff; --code: #f1f3f5;
+  --ok: #1a7f37; --warn: #9a6700; --bad: #c62828; --info: #0969da; --idle: #6e7781;
+  --ok-bg: #e6f4ea; --warn-bg: #fff4d6; --bad-bg: #fde7e7; --info-bg: #e3efff; --idle-bg: #eef0f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8d96a0;
+    --accent: #2bb3a8; --accent-ink: #061413; --code: #0b0f14;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --info: #58a6ff; --idle: #8d96a0;
+    --ok-bg: #12261a; --warn-bg: #2b2210; --bad-bg: #2d1416; --info-bg: #0f2240; --idle-bg: #1f252d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
+button, input, select, textarea { font: inherit; color: inherit; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line);
+  background: var(--panel); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header h1 span { color: var(--accent); }
+.counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.links a { color: var(--muted); margin-left: 12px; text-decoration: none; }
+.links a:hover { color: var(--text); }
+main { display: grid; grid-template-columns: 340px 1fr; min-height: calc(100vh - 53px); }
+aside { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
+.new { padding: 12px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.new label { font-size: 12px; color: var(--muted); }
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; min-width: 0; }
+input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 100%; }
+textarea { resize: vertical; min-height: 54px; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.danger { color: var(--bad); }
+.btn:disabled { opacity: .5; cursor: default; }
+.list { overflow-y: auto; flex: 1; }
+.item { display: block; padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; color: inherit; text-decoration: none; }
+.item:hover { background: var(--bg); }
+.item.sel { background: var(--bg); box-shadow: inset 3px 0 0 var(--accent); }
+.item .top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.item .sub { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  background: var(--idle-bg); color: var(--idle); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); } .pill.info { background: var(--info-bg); color: var(--info); }
+section.detail { padding: 20px 24px 48px; min-width: 0; max-width: 1100px; }
+.empty { color: var(--muted); padding: 40px 0; }
+.empty h2 { color: var(--text); font-size: 18px; }
+.title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.title h2 { margin: 0; font-size: 20px; }
+.meta { color: var(--muted); margin: 4px 0 16px; }
+.steps { display: flex; gap: 0; margin: 8px 0 20px; overflow-x: auto; padding-bottom: 4px; }
+.step { flex: 1; min-width: 92px; text-align: center; position: relative; font-size: 12px; color: var(--muted); }
+.step::before { content: ""; position: absolute; top: 9px; left: -50%; width: 100%; height: 2px; background: var(--line); z-index: 0; }
+.step:first-child::before { display: none; }
+.dot { width: 20px; height: 20px; border-radius: 50%; margin: 0 auto 4px; border: 2px solid var(--line); background: var(--panel);
+  position: relative; z-index: 1; }
+.step.done .dot { background: var(--ok); border-color: var(--ok); }
+.step.done::before, .step.active::before, .step.wait::before { background: var(--ok); }
+.step.active .dot { border-color: var(--info); box-shadow: 0 0 0 4px var(--info-bg); }
+.step.wait .dot { background: var(--warn); border-color: var(--warn); box-shadow: 0 0 0 4px var(--warn-bg); }
+.step.skip { opacity: .45; }
+.step.done, .step.active, .step.wait { color: var(--text); }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 0; }
+.card h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.card.full { grid-column: 1 / -1; }
+.card.attn { border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 6px; max-width: 160px; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+ul.plain { margin: 0; padding-left: 18px; }
+.violations li { color: var(--bad); }
+pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 0;
+  overflow: auto; max-height: 340px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.tabs button { border: 1px solid var(--line); background: transparent; padding: 3px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); }
+.tabs button.on { color: var(--text); border-color: var(--muted); }
+.trace { list-style: none; margin: 0; padding: 0; }
+.trace li { display: grid; grid-template-columns: 64px 190px 1fr; gap: 10px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.trace li:last-child { border-bottom: 0; }
+.trace .t { color: var(--muted); text-align: right; }
+.trace .k.bad { color: var(--bad); } .trace .k.warn { color: var(--warn); } .trace .k.info { color: var(--info); }
+.trace .d { color: var(--muted); overflow-wrap: anywhere; }
+.approve-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.approve-row input { flex: 1; min-width: 140px; }
+.note { color: var(--muted); font-size: 12.5px; }
+.banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-weight: 600; }
+.banner.ok { background: var(--ok-bg); color: var(--ok); } .banner.bad { background: var(--bad-bg); color: var(--bad); }
+.banner.warn { background: var(--warn-bg); color: var(--warn); } .banner.info { background: var(--info-bg); color: var(--info); }
+.err { color: var(--bad); font-size: 12.5px; min-height: 1em; }
+@media (max-width: 860px) {
+  main { grid-template-columns: 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  .list { max-height: 260px; }
+  .grid { grid-template-columns: 1fr; }
+  section.detail { padding: 16px; }
+  .trace li { grid-template-columns: 52px 1fr; } .trace .d { grid-column: 1 / -1; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Ops<span>Pilot</span></h1>
+  <div class="counts" id="counts"></div>
+  <div class="spacer"></div>
+  <nav class="links"><a href="/docs" target="_blank">API docs</a><a href="/metrics" target="_blank">Metrics</a></nav>
+</header>
+<main>
+  <aside>
+    <form class="new" id="new">
+      <div id="demo-row" hidden>
+        <label for="demo">Replay a recorded incident</label>
+        <select id="demo"><option value="">Choose a scenario</option></select>
+      </div>
+      <div class="row">
+        <div><label for="ns">Namespace</label><input id="ns" required pattern="[a-z0-9]([-a-z0-9.]*[a-z0-9])?" placeholder="shop"></div>
+        <div><label for="wl">Workload</label><input id="wl" required pattern="[a-z0-9]([-a-z0-9.]*[a-z0-9])?" placeholder="api"></div>
+      </div>
+      <div class="row">
+        <div><label for="alert">Alert</label><input id="alert" maxlength="500" placeholder="pods restarting"></div>
+        <div style="flex:0 0 96px"><label for="sev">Severity</label>
+          <select id="sev"><option>low</option><option selected>medium</option><option>high</option><option>critical</option></select></div>
+      </div>
+      <button class="btn primary" type="submit">Open incident</button>
+      <div class="err" id="new-err"></div>
+    </form>
+    <div class="list" id="list"></div>
+  </aside>
+  <section class="detail" id="detail">
+    <div class="empty"><h2>No incident selected</h2>
+      <p>Open an incident on the left. A worker picks it up, gathers evidence, retrieves a runbook and proposes a fix.
+      Nothing changes in the cluster until a person approves it here.</p></div>
+  </section>
+</main>
+<script>
+"use strict";
+const STEPS = ["investigate", "retrieve", "diagnose", "guardrails", "approval", "apply", "verify", "report"];
+const STATUS_TONE = { queued: "idle", running: "info", waiting_approval: "warn", succeeded: "ok", failed: "bad" };
+const OUTCOME_TONE = { resolved: "ok", escalated: "warn", rejected: "idle", fix_failed: "bad" };
+const OUTCOME_TEXT = {
+  resolved: "Resolved: the fix was applied and the rollout became healthy.",
+  escalated: "Escalated to a human: no safe automated change was available.",
+  rejected: "Rejected by the approver. The cluster was not touched.",
+  fix_failed: "The approved fix was applied but the workload did not recover.",
+};
+const $ = (id) => document.getElementById(id);
+let selected = null, evTab = "logs", scenarios = [], lastSig = "";
+
+// Everything shown comes from pods and the model, so it is untrusted: always escape.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pill = (text, tone) => `<span class="pill ${tone || "idle"}">${esc(text)}</span>`;
+const label = (s) => String(s || "").replace(/_/g, " ");
+function ago(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+}
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${r.status}`);
+  return body;
+}
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+
+async function loadCounts() {
+  try {
+    const h = await api("/healthz");
+    $("counts").innerHTML = Object.entries(h.jobs).map(([s, n]) => pill(`${n} ${label(s)}`, STATUS_TONE[s])).join("");
+  } catch (e) { $("counts").innerHTML = pill("API unreachable", "bad"); }
+}
+
+async function loadList() {
+  let rows;
+  try { rows = await api("/incidents?limit=100"); } catch (e) { return; }
+  if (!rows.length) { $("list").innerHTML = `<div class="item sub" style="cursor:default">No incidents yet.</div>`; return; }
+  $("list").innerHTML = rows.map((r) => {
+    const tag = r.outcome ? pill(label(r.outcome), OUTCOME_TONE[r.outcome]) : pill(label(r.status), STATUS_TONE[r.status]);
+    const what = r.category ? `${label(r.category)} → ${label(r.action)}` : (r.incident.alert || "");
+    return `<a class="item ${r.id === selected ? "sel" : ""}" href="#/incidents/${r.id}">
+      <div class="top"><strong>#${r.id} ${esc(r.incident.namespace)}/${esc(r.incident.workload)}</strong>${tag}</div>
+      <div class="sub">${esc(what)}</div>
+      <div class="sub">${esc(r.tenant)} · ${ago(r.updated)}</div></a>`;
+  }).join("");
+}
+
+function stepStates(job, trace) {
+  const ended = new Set(trace.filter((e) => e.kind === "node_end").map((e) => e.node));
+  const started = trace.filter((e) => e.kind === "node_start").map((e) => e.node);
+  const current = job.status === "running" ? started[started.length - 1] : null;
+  const action = job.proposal && job.proposal.action;
+  const final = ["succeeded", "failed"].includes(job.status);
+  return STEPS.map((s) => {
+    if (s === "approval" && job.status === "waiting_approval") return "wait";
+    if (s === current && !ended.has(s)) return "active";
+    if (ended.has(s)) return "done";
+    if (final) return "skip";
+    if (action === "escalate" && ["approval", "apply", "verify"].includes(s)) return "skip";
+    return "";
+  });
+}
+
+function renderProposal(p, job) {
+  if (!p) return `<p class="note">The model has not proposed anything yet.</p>`;
+  const conf = Math.max(0, Math.min(1, Number(p.confidence) || 0));
+  return `<dl class="kv">
+    <dt>Diagnosis</dt><dd>${pill(label(p.category), "info")}</dd>
+    <dt>Action</dt><dd><code>${esc(p.action)}</code></dd>
+    <dt>Parameters</dt><dd><code>${esc(JSON.stringify(p.params || {}))}</code></dd>
+    <dt>Confidence</dt><dd>${Math.round(conf * 100)}%<div class="bar"><i style="width:${conf * 100}%"></i></div></dd>
+    <dt>Why</dt><dd>${esc(p.explanation)}</dd>
+    <dt>Revisions</dt><dd>${job.revisions || 0}</dd></dl>`;
+}
+
+function renderGuard(job) {
+  const g = job.guardrail;
+  if (!g) return `<p class="note">Not checked yet.</p>`;
+  const forced = job.proposal && job.proposal.action === "escalate" && !g.ok;
+  return (g.ok ? `<p>${pill("passed", "ok")} Action is on the allowlist, scoped to this workload, within bounds.</p>`
+               : `<p>${pill(forced ? "escalated" : "rejected", "bad")} The proposal was sent back to the model:</p>
+                  <ul class="plain violations">${g.violations.map((v) => `<li>${esc(v)}</li>`).join("")}</ul>`)
+    + `<p class="note">Guardrails are deterministic code, not a prompt, so text in the logs cannot talk its way past them.</p>`;
+}
+
+function renderApproval(job) {
+  if (job.status === "waiting_approval") {
+    return `<div class="card full attn"><h3>Approval required</h3>
+      <p>Apply <code>${esc(job.proposal.action)} ${esc(JSON.stringify(job.proposal.params || {}))}</code>
+      to <strong>${esc(job.incident.namespace)}/${esc(job.incident.workload)}</strong>?</p>
+      <div class="approve-row">
+        <input id="by" placeholder="Your name" maxlength="100" value="${esc(store("opspilot.by") || "")}">
+        <input id="note" placeholder="Note (optional)" maxlength="500">
+        <button class="btn primary" data-decide="approve">Approve and apply</button>
+        <button class="btn danger" data-decide="reject">Reject</button>
+      </div><div class="err" id="ap-err"></div></div>`;
+  }
+  const a = job.approval;
+  if (!a) return "";
+  return `<div class="card full"><h3>Approval</h3><p>${pill(a.decision === "approve" ? "approved" : "rejected",
+    a.decision === "approve" ? "ok" : "bad")} by <strong>${esc(a.by)}</strong>${a.note ? `: ${esc(a.note)}` : ""}</p></div>`;
+}
+
+function renderTrace(trace) {
+  if (!trace.length) return `<p class="note">No events yet.</p>`;
+  const t0 = trace[0].ts;
+  const tone = { error: "bad", lease_lost: "bad", budget_exceeded: "bad", interrupt: "warn", resumed: "info", llm_call: "info" };
+  return `<ul class="trace mono">${trace.map((e) => {
+    let d = "";
+    if (e.kind === "llm_call") d = `${e.data.model} · ${e.data.tokens_in} in / ${e.data.tokens_out} out · $${e.data.cost_usd}`;
+    else if (e.kind === "node_end") d = `${e.data.ms} ms · updated ${(e.data.updated || []).join(", ")}`;
+    else if (e.kind !== "node_start") d = JSON.stringify(e.data);
+    return `<li><span class="t">+${(e.ts - t0).toFixed(2)}s</span><span class="k ${tone[e.kind] || ""}">${esc(e.kind)}${e.node ? ` <b>${esc(e.node)}</b>` : ""}</span><span class="d">${esc(d)}</span></li>`;
+  }).join("")}</ul>`;
+}
+
+async function loadDetail() {
+  if (selected == null) { lastSig = ""; return; }
+  let job, trace;
+  try { [job, trace] = await Promise.all([api(`/incidents/${selected}`), api(`/incidents/${selected}/trace`)]); }
+  catch (e) { $("detail").innerHTML = `<div class="empty"><h2>Incident #${esc(selected)} not found</h2></div>`; return; }
+  // Do not wipe what the approver is typing.
+  const active = document.activeElement;
+  if (active && (active.id === "by" || active.id === "note")) return;
+  const sig = `${selected}|${evTab}|${job.status}|${job.updated}|${trace.length}`;
+  if (sig === lastSig) return;   // nothing changed: keep scroll positions
+  lastSig = sig;
+  const states = stepStates(job, trace);
+  const ev = job.evidence || {};
+  const outcome = job.outcome;
+  const u = job.usage || {};
+  $("detail").innerHTML = `
+    <div class="title"><h2>#${job.id} ${esc(job.incident.namespace)}/${esc(job.incident.workload)}</h2>
+      ${pill(label(job.status), STATUS_TONE[job.status])} ${pill(job.incident.severity, job.incident.severity === "critical" ? "bad" : "idle")}</div>
+    <div class="meta">${esc(job.incident.alert || "no alert text")} · tenant ${esc(job.tenant)} · attempt ${job.attempts}
+      · ${u.calls || 0} model call${u.calls === 1 ? "" : "s"}, ${(u.tokens_in || 0) + (u.tokens_out || 0)} tokens, $${(u.cost_usd || 0).toFixed(5)}</div>
+    ${outcome ? `<div class="banner ${OUTCOME_TONE[outcome] || "info"}">${esc(OUTCOME_TEXT[outcome] || outcome)}</div>` : ""}
+    ${job.error ? `<div class="banner bad">${esc(job.error)}</div>` : ""}
+    <div class="steps">${STEPS.map((s, i) => `<div class="step ${states[i]}"><div class="dot"></div>${s}</div>`).join("")}</div>
+    <div class="grid">
+      ${renderApproval(job)}
+      <div class="card"><h3>Proposed fix</h3>${renderProposal(job.proposal, job)}</div>
+      <div class="card"><h3>Guardrails</h3>${renderGuard(job)}
+        <h3 style="margin-top:14px">Runbooks retrieved</h3>
+        ${job.runbooks.length ? `<ul class="plain">${job.runbooks.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : `<p class="note">None yet.</p>`}</div>
+      <div class="card full"><h3>Evidence (secrets redacted before the model sees it)</h3>
+        <div class="tabs">${["logs", "events", "describe"].map((t) => `<button data-tab="${t}" class="${t === evTab ? "on" : ""}">${t}</button>`).join("")}</div>
+        <pre>${esc(ev[evTab] || "not collected yet")}</pre></div>
+      <div class="card full"><h3>Trace</h3>${renderTrace(trace)}</div>
+    </div>`;
+}
+
+async function decide(decision) {
+  const by = $("by").value.trim();
+  if (!by) { $("ap-err").textContent = "Enter your name so the decision is attributable."; $("by").focus(); return; }
+  store("opspilot.by", by);
+  try {
+    await api(`/incidents/${selected}/approval`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, by, note: $("note").value.trim() || null }) });
+    $("by").blur(); $("note").blur();
+    refresh();
+  } catch (e) { $("ap-err").textContent = e.message; }
+}
+
+$("detail").addEventListener("click", (e) => {
+  const d = e.target.closest("[data-decide]"); if (d) return decide(d.dataset.decide);
+  const t = e.target.closest("[data-tab]"); if (t) { evTab = t.dataset.tab; loadDetail(); }
+});
+
+$("demo").addEventListener("change", () => {
+  const s = scenarios.find((x) => x.id === $("demo").value); if (!s) return;
+  $("ns").value = s.namespace; $("wl").value = s.workload; $("alert").value = s.alert || ""; $("sev").value = s.severity || "medium";
+});
+
+$("new").addEventListener("submit", async (e) => {
+  e.preventDefault(); $("new-err").textContent = "";
+  try {
+    const r = await api("/incidents", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ namespace: $("ns").value.trim(), workload: $("wl").value.trim(), alert: $("alert").value.trim(), severity: $("sev").value }) });
+    location.hash = `#/incidents/${r.id}`;
+  } catch (err) { $("new-err").textContent = err.message; }
+});
+
+function route() {
+  const m = location.hash.match(/^#\/incidents\/(\d+)$/);
+  selected = m ? Number(m[1]) : null;
+  refresh();
+}
+function refresh() { loadCounts(); loadList(); loadDetail(); }
+
+(async () => {
+  try {
+    scenarios = await api("/demo/scenarios");
+    if (scenarios.length) {
+      $("demo-row").hidden = false;
+      $("demo").insertAdjacentHTML("beforeend", scenarios.map((s) => `<option value="${esc(s.id)}">${esc(s.id)} (${esc(s.namespace)}/${esc(s.workload)})</option>`).join(""));
+    }
+  } catch (e) { /* not in demo mode */ }
+  window.addEventListener("hashchange", route);
+  route();
+  setInterval(refresh, 1500);
+})();
+</script>
+</body>
+</html>

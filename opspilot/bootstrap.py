@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 from .agents import build_graph
-from .cluster import FakeCluster, KubectlCluster
+from .cluster import DemoCluster, FakeCluster, KubectlCluster
 from .llm import get_llm
 from .rag import RunbookIndex
 from .runtime import RunContext
@@ -20,8 +20,10 @@ def load_scenarios(path=None):
 
 
 def make_cluster():
-    """OPSPILOT_CLUSTER=kubectl (default) or demo:<scenario-id> to replay a recorded incident."""
+    """OPSPILOT_CLUSTER=kubectl (default), demo (every recorded incident, routed by target), or demo:<scenario-id>."""
     spec = os.environ.get("OPSPILOT_CLUSTER", "kubectl")
+    if spec == "demo":
+        return DemoCluster(load_scenarios())
     if spec.startswith("demo:"):
         sid = spec.split(":", 1)[1]
         return FakeCluster(next(s for s in load_scenarios() if s["id"] == sid))

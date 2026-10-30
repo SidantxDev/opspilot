@@ -224,3 +224,37 @@ class Store:
             return {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM jobs GROUP BY status")}
         finally:
             c.close()
+
+    def list_jobs(self, limit=50, status=None):
+        c = self._connect()
+        try:
+            q, args = "SELECT * FROM jobs", []
+            if status:
+                q, args = q + " WHERE status=?", [status]
+            rows = c.execute(q + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
+            return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
+        finally:
+            c.close()
+
+    def metrics(self):
+        """Aggregates for /metrics, computed from the database so they cover every worker process."""
+        c = self._connect()
+        try:
+            q = lambda sql: [dict(r) for r in c.execute(sql)]
+            return {
+                "jobs": q("SELECT status, COUNT(*) n FROM jobs GROUP BY status"),
+                "outcomes": q("SELECT json_extract(cp.state, '$.outcome') outcome, COUNT(*) n FROM checkpoints cp "
+                              "JOIN (SELECT job_id, MAX(seq) seq FROM checkpoints GROUP BY job_id) last "
+                              "ON cp.job_id = last.job_id AND cp.seq = last.seq "
+                              "WHERE json_extract(cp.state, '$.outcome') IS NOT NULL GROUP BY outcome"),
+                "events": q("SELECT kind, COUNT(*) n FROM events GROUP BY kind"),
+                "nodes": q("SELECT node, COUNT(*) n, SUM(json_extract(data, '$.ms')) ms FROM events "
+                           "WHERE kind='node_end' GROUP BY node"),
+                "usage": q("SELECT tenant, model, COUNT(*) calls, SUM(tokens_in) tin, SUM(tokens_out) tout, "
+                           "SUM(cost_usd) cost FROM usage GROUP BY tenant, model"),
+                "approvals": q("SELECT a.decision, COUNT(*) n, SUM(a.ts - e.ts) wait FROM approvals a "
+                               "JOIN (SELECT job_id, MIN(ts) ts FROM events WHERE kind='interrupt' GROUP BY job_id) e "
+                               "ON a.job_id = e.job_id GROUP BY a.decision"),
+            }
+        finally:
+            c.close()

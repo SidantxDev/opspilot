@@ -1,4 +1,4 @@
-"""Run the service:  python -m opspilot api [--port 8000]  |  python -m opspilot worker
+"""Run the service:  python -m opspilot api [--port 8000]  |  python -m opspilot worker  |  python -m opspilot mcp
 
 Both processes read the same env vars (OPSPILOT_DB, OPSPILOT_LLM, OPSPILOT_CLUSTER, ...), so start one API and
 any number of workers against the same database.
@@ -14,8 +14,12 @@ def main():
     api.add_argument("--port", type=int, default=8000)
     wk = sub.add_parser("worker", help="process incidents from the queue")
     wk.add_argument("--poll", type=float, default=1.0)
+    sub.add_parser("mcp", help="serve OpsPilot's tools over MCP (stdio)")
     a = ap.parse_args()
-    if a.cmd == "api":
+    if a.cmd == "mcp":
+        from .mcp_server import main as mcp_main
+        mcp_main()
+    elif a.cmd == "api":
         import uvicorn
         from .api import create_app
         uvicorn.run(create_app(), host=a.host, port=a.port)

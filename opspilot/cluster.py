@@ -62,6 +62,37 @@ class FakeCluster:
         return self.is_healthy(ns, workload)
 
 
+class DemoCluster:
+    """Routes each (namespace, workload) to the recorded scenario for it, so a live demo can replay any incident."""
+
+    def __init__(self, scenarios):
+        self.by_target = {(s["incident"]["namespace"], s["incident"]["workload"]): FakeCluster(s) for s in scenarios}
+
+    def _for(self, ns, workload):
+        c = self.by_target.get((ns, workload))
+        if not c:
+            raise LookupError(f"no recorded scenario for {ns}/{workload}")
+        return c
+
+    def logs(self, ns, workload):
+        return self._for(ns, workload).logs(ns, workload)
+
+    def events(self, ns, workload):
+        return self._for(ns, workload).events(ns, workload)
+
+    def describe(self, ns, workload):
+        return self._for(ns, workload).describe(ns, workload)
+
+    def apply(self, ns, workload, action, params):
+        return self._for(ns, workload).apply(ns, workload, action, params)
+
+    def is_healthy(self, ns, workload):
+        return self._for(ns, workload).is_healthy(ns, workload)
+
+    def wait_healthy(self, ns, workload, timeout=0):
+        return self._for(ns, workload).wait_healthy(ns, workload, timeout)
+
+
 class KubectlCluster:
     """Real cluster via the kubectl binary. Arguments are passed as a list (never through a shell) and names
     are validated first. NOTE: written against kubectl docs; run it against a throwaway cluster (kind/minikube)
