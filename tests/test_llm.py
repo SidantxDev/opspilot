@@ -57,3 +57,12 @@ def test_gemini_retries_transient_failures_but_not_client_errors():
     with pytest.raises(RuntimeError):
         make(lambda req: calls.append(1) or httpx.Response(400, text="bad key")).complete("s", "u")
     assert len(calls) == 1
+
+
+def test_daily_quota_fails_fast_without_retrying():
+    from opspilot.llm import QuotaExhausted
+    calls = []
+    body = '{"error": {"code": 429, "details": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}}'
+    with pytest.raises(QuotaExhausted):
+        make(lambda req: calls.append(1) or httpx.Response(429, text=body)).complete("s", "u")
+    assert len(calls) == 1

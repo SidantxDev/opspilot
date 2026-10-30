@@ -112,6 +112,9 @@ def main():
         rows.append(run_scenario(sc, llm, rag))
         if rows[-1]["error"]:
             print(f"{sc['id']}: run failed: {rows[-1]['error']}", file=sys.stderr)
+            if "quota exhausted" in rows[-1]["error"]:
+                print("Aborting without writing results: a partial run is not a score.", file=sys.stderr)
+                sys.exit(2)
             if len(rows) == 1 and rows[0]["tokens"] == 0:      # the model is unreachable: scoring the rest is noise
                 print("Aborting: the first scenario never got a model response. Check the key and model name.",
                       file=sys.stderr)

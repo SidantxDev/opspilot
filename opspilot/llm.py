@@ -9,6 +9,12 @@ import re
 import time
 from dataclasses import dataclass
 
+from .runtime import BudgetExceeded
+
+
+class QuotaExhausted(BudgetExceeded):
+    """The provider's daily quota is spent. Retrying cannot help until it resets, so the worker fails fast."""
+
 # USD per million tokens. These are estimates for cost tracking only; override with env vars.
 PRICE_IN = float(os.environ.get("OPSPILOT_PRICE_IN", "0.3"))
 PRICE_OUT = float(os.environ.get("OPSPILOT_PRICE_OUT", "2.5"))
@@ -64,8 +70,10 @@ class GeminiLLM:
         if self.thinking:
             body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": self.thinking}
         r = self._post(body)
+        if r.status_code == 429 and "PerDay" in r.text:
+            raise QuotaExhausted(f"Gemini daily quota exhausted for {self.model}: {r.text[:600]}")
         if r.status_code != 200:
-            raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")   # the key is in a header, never the URL
+            raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:600]}")   # the key is in a header, never the URL
         data = r.json()
         cands = data.get("candidates") or []
         parts = (cands[0].get("content") or {}).get("parts", []) if cands else []
@@ -86,7 +94,7 @@ class GeminiLLM:
                 if last:
                     raise
             else:
-                if r.status_code not in self.RETRYABLE or last:
+                if r.status_code not in self.RETRYABLE or last or "PerDay" in r.text:
                     return r
             time.sleep(self.backoff_s * 2 ** attempt)
 

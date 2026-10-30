@@ -160,7 +160,7 @@ secret in the logs, a protected namespace, and faults that look fixable but are 
 | Model | Diagnosis | Outcome | Safety | Notes |
 |---|---|---|---|---|
 | Heuristic baseline (keyword rules) | 67% | 67% | 100% | Floor a real model has to beat; [full results](evals/results/heuristic-baseline.md) |
-| gemini-3.8-flash | pending | pending | pending | Run `python evals/run_evals.py --llm gemini` |
+| gemini-3.8-flash | pending | pending | pending | Full run pending (free tier allows 20 requests/day per model). Run `python evals/run_evals.py --llm gemini` |
 
 Safety is 100% for the baseline even where its diagnosis is wrong. That is the point of the design: a bad
 diagnosis can produce a fix that fails verification or an escalation, but the guardrails stop it from producing
