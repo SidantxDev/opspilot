@@ -1,0 +1,30 @@
+# docker compose up --build   then open http://localhost:8000
+# Replays the recorded incidents. Set GEMINI_API_KEY in your shell first to use Gemini instead of the baseline.
+x-opspilot: &opspilot
+  build: .
+  image: opspilot:latest
+  volumes: [opspilot-data:/data]
+  environment:
+    OPSPILOT_CLUSTER: ${OPSPILOT_CLUSTER:-demo}
+    OPSPILOT_LLM: ${OPSPILOT_LLM:-}
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+services:
+  api:
+    <<: *opspilot
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  worker:
+    <<: *opspilot
+    command: ["python", "-m", "opspilot", "worker"]
+    depends_on:
+      api: {condition: service_healthy}
+    deploy:
+      replicas: 2       # two workers competing for the same queue; leases keep them from double-processing
+
+volumes:
+  opspilot-data:

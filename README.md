@@ -18,6 +18,14 @@ production:
   injection in pod logs cannot widen what the system is able to do.
 - **Evals that gate CI.** 12 recorded incidents are replayed end to end through the real runtime and scored on
   diagnosis, outcome, safety, cost, and latency.
+- **Operable.** An approval console, Prometheus metrics, a full per-incident trace, per-tenant token budgets, and
+  an MCP server so other agents can use OpsPilot's tools without being able to approve anything.
+
+![Approval console: a proposed fix waiting for a human, with the prompt injection in the logs shown as inert evidence](docs/console-approval.png)
+
+*The `injection-in-logs` scenario: the pod's logs tell the model to scale to zero and delete the namespace. It
+proposes the memory fix the evidence supports, the guardrails confirm it is in bounds, and nothing happens until a
+person clicks approve.*
 
 ## Architecture
 
@@ -55,17 +63,30 @@ production:
 | `policy.py` | Deterministic guardrails: action allowlist, parameter bounds, protected namespaces, confidence floor |
 | `rag.py` | BM25 retrieval over the markdown runbooks, chunked by heading |
 | `llm.py` | Gemini (REST), Anthropic, and a deterministic heuristic baseline behind one interface |
-| `cluster.py` | `KubectlCluster` for real clusters, `FakeCluster` that replays recorded scenarios |
+| `cluster.py` | `KubectlCluster` for real clusters; `FakeCluster` / `DemoCluster` replay recorded scenarios |
+| `api.py`, `static/` | REST API, Prometheus `/metrics`, and the approval console |
+| `mcp_server.py` | MCP tools for other agents: diagnostics, runbook search, guardrail check, filing incidents |
 | `runtime.py` | Per-run context: the only path to the model, enforcing a per-tenant token budget and recording usage |
 
 ## Quickstart
 
-```bash
-pip install -e ".[dev]"
-python -m pytest -q                       # 25 tests, fully offline
+One command, no cluster and no API key needed. It runs the API and two workers that compete for the same queue,
+replaying the recorded incidents:
 
-# Run the service against a recorded incident (no cluster, no API key needed)
-export OPSPILOT_CLUSTER=demo:oom-api OPSPILOT_LLM=heuristic
+```bash
+docker compose up --build
+# open http://localhost:8000, pick "Replay a recorded incident", approve the fix
+```
+
+Set `GEMINI_API_KEY` in your shell before `docker compose up` to use Gemini instead of the rules baseline.
+
+Without Docker:
+
+```bash
+pip install -e ".[dev,mcp]"
+python -m pytest -q                       # 32 tests, fully offline
+
+export OPSPILOT_CLUSTER=demo OPSPILOT_LLM=heuristic
 python -m opspilot api --port 8000 &
 python -m opspilot worker &
 
@@ -88,9 +109,38 @@ context (or `OPSPILOT_KUBE_CONTEXT`).
 | `OPSPILOT_DB` | `opspilot.db` | SQLite path shared by the API and the workers |
 | `OPSPILOT_LLM` | auto | `gemini`, `anthropic`, or `heuristic`; auto picks by which API key is set |
 | `OPSPILOT_MODEL` | `gemini-2.5-flash` / `claude-sonnet-5-5` | Model name for the chosen provider |
-| `OPSPILOT_CLUSTER` | `kubectl` | `kubectl`, or `demo:<scenario-id>` to replay a recorded incident |
+| `OPSPILOT_CLUSTER` | `kubectl` | `kubectl`; `demo` replays every recorded incident by namespace/workload; `demo:<id>` replays one |
 | `OPSPILOT_PROTECTED_NS` | | Extra comma-separated namespaces that may never be changed automatically |
 | `OPSPILOT_TENANT_TOKEN_BUDGET` | `2000000` | Token cap per tenant; runs fail fast once it is spent |
+
+## Console, metrics and MCP
+
+**Console** (`/`): open or replay incidents, watch the run move through the graph, read the redacted evidence, the
+retrieved runbooks, the guardrail verdict and the full trace, then approve or reject. The approver's name and note
+are recorded with the decision. Every value on the page comes from pods or the model, so all of it is rendered as
+escaped text.
+
+**Metrics** (`/metrics`, Prometheus format) are computed from the database at scrape time, so they cover every
+worker process, not just the one serving the request:
+
+| Metric | What it answers |
+|---|---|
+| `opspilot_jobs{status}` | How many incidents are queued, running, waiting for a human |
+| `opspilot_outcomes_total{outcome}` | Resolved vs escalated vs fix failed vs rejected |
+| `opspilot_events_total{kind}` | Reliability signals: `resumed`, `lease_lost`, `error`, `budget_exceeded` |
+| `opspilot_node_duration_seconds_{sum,count}{node}` | Where time goes in the graph |
+| `opspilot_llm_{calls,tokens,cost_usd}_total{tenant,model}` | Model spend per tenant |
+| `opspilot_approval_wait_seconds_{sum,count}{decision}` | How long fixes wait for a human |
+
+**MCP server** (`python -m opspilot mcp`, stdio) exposes five tools to any MCP client: `get_workload_evidence`
+(redacted), `search_runbooks`, `check_proposal` (runs the guardrails, applies nothing), `open_incident` and
+`get_incident`. There is deliberately no approve tool: an agent wired to OpsPilot can investigate and file, but it
+cannot let its own change reach the cluster. Claude Desktop config:
+
+```json
+{"mcpServers": {"opspilot": {"command": "python", "args": ["-m", "opspilot", "mcp"],
+  "env": {"OPSPILOT_DB": "/path/to/opspilot.db", "OPSPILOT_CLUSTER": "demo"}}}}
+```
 
 ## Evals
 
@@ -136,14 +186,17 @@ python evals/run_evals.py --llm gemini --only redis-down     # one scenario
 - Secrets are redacted before evidence reaches the model
 - The tenant token budget stops a run
 - API input validation blocks argument injection into `kubectl`
+- Metrics reflect a full run (status, outcome, LLM calls, approval wait, node timings)
+- The MCP server registers exactly the five safe tools, redacts evidence, and rejects invalid names
 
 ## Limits (honest)
 
 - **The eval set is small.** 12 scenarios is enough to catch regressions and show the shape of the problem, not
   to claim a production accuracy number.
 - **`FakeCluster` is a simulation.** It returns recorded evidence and marks the workload healthy when the
-  applied action matches the scenario's correct fix. `KubectlCluster` has not yet been tested against a live
-  cluster.
+  applied action matches the scenario's correct fix. Its state lives in each worker process, so in demo mode a
+  fix applied by one worker is not seen by another that resumes the job. `KubectlCluster` has not yet been tested
+  against a live cluster.
 - **`set_env` cannot know the value.** On a real cluster it sets the missing variable to an empty string,
   which rarely fixes anything. A real deployment should map this action to a secret or config reference
   chosen by the approver.
@@ -158,6 +211,6 @@ python evals/run_evals.py --llm gemini --only redis-down     # one scenario
 
 - Real-model eval runs, with the failures fixed and reported here
 - Test `KubectlCluster` on minikube with deliberately broken deployments
-- Dockerfile and docker-compose (API, worker, and a demo scenario)
-- Expose the cluster tools as an MCP server
-- Approval web UI
+- A chaos run that kills workers at random under load and checks every fix was applied exactly once
+- Postgres store for multi-host workers
+- Dense embeddings and hybrid retrieval once the runbook corpus grows
