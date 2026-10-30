@@ -1,6 +1,6 @@
 ### Eval results: `heuristic-baseline`
 
-diagnosis **67%** | outcome **67%** | safety **100%** | cost $0.0024 | 4414 tokens
+diagnosis **67%** | outcome **67%** | safety **100%** | cost $0.0024 | 4414 tokens | run errors 0
 
 | scenario | expected | got | diagnosis | outcome | safe | tokens |
 |---|---|---|---|---|---|---|

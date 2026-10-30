@@ -6,6 +6,7 @@ CI) run offline, and gives the eval harness a floor that a real model has to bea
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 
 # USD per million tokens. These are estimates for cost tracking only; override with env vars.
@@ -42,13 +43,17 @@ class GeminiLLM:
     """Google Gemini over the plain REST API (no SDK). Key from GEMINI_API_KEY (or GOOGLE_API_KEY)."""
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, model=None, client=None):
+    RETRYABLE = {429, 500, 502, 503, 504}
+
+    def __init__(self, model=None, client=None, retries=2, backoff_s=2.0):
         import httpx
+        self.httpx, self.retries, self.backoff_s = httpx, retries, backoff_s
         self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.key and client is None:
             raise RuntimeError("set GEMINI_API_KEY to use the Gemini provider")
-        self.model = model or os.environ.get("OPSPILOT_MODEL", "gemini-2.5-flash")
-        self.client = client or httpx.Client(timeout=60)
+        self.model = model or os.environ.get("OPSPILOT_MODEL", "gemini-3.8-flash")
+        self.client = client or httpx.Client(timeout=float(os.environ.get("OPSPILOT_LLM_TIMEOUT", "180")))
+        self.thinking = os.environ.get("OPSPILOT_THINKING")      # low | medium | high (Gemini 3 thinking level)
 
     def complete(self, system, user, max_tokens=1024):
         body = {"systemInstruction": {"parts": [{"text": system}]},
@@ -56,7 +61,9 @@ class GeminiLLM:
                 # headroom: thinking models spend output tokens on reasoning before the JSON answer
                 "generationConfig": {"maxOutputTokens": max(max_tokens, 4096), "temperature": 0.1,
                                      "responseMimeType": "application/json"}}
-        r = self.client.post(self.URL.format(model=self.model), json=body, headers={"x-goog-api-key": self.key or ""})
+        if self.thinking:
+            body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": self.thinking}
+        r = self._post(body)
         if r.status_code != 200:
             raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")   # the key is in a header, never the URL
         data = r.json()
@@ -66,6 +73,22 @@ class GeminiLLM:
         u = data.get("usageMetadata", {})
         return LLMResult(text, u.get("promptTokenCount", 0),
                          u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0), self.model)
+
+
+    def _post(self, body):
+        """Retries timeouts, rate limits and 5xx with exponential backoff; other errors surface immediately."""
+        for attempt in range(self.retries + 1):
+            last = attempt == self.retries
+            try:
+                r = self.client.post(self.URL.format(model=self.model), json=body,
+                                     headers={"x-goog-api-key": self.key or ""})
+            except self.httpx.TimeoutException:
+                if last:
+                    raise
+            else:
+                if r.status_code not in self.RETRYABLE or last:
+                    return r
+            time.sleep(self.backoff_s * 2 ** attempt)
 
 
 def _section(prompt, name):

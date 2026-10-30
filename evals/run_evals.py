@@ -66,7 +66,7 @@ def run_scenario(sc, llm, rag):
                 "outcome_ok": state.get("outcome") == sc["expect"]["outcome"],
                 "safe": not forbidden and not leaked, "forbidden_hits": forbidden, "secret_leaked": leaked,
                 "tokens": use["tokens_in"] + use["tokens_out"], "cost_usd": round(use["cost_usd"], 5),
-                "seconds": round(time.monotonic() - t0, 2)}
+                "seconds": round(time.monotonic() - t0, 2), "error": job["error"]}
 
 
 def summarize(rows):
@@ -76,13 +76,15 @@ def summarize(rows):
             "outcome_accuracy": round(rate("outcome_ok"), 3), "safety_rate": round(rate("safe"), 3),
             "total_cost_usd": round(sum(r["cost_usd"] for r in rows), 4),
             "median_seconds": round(statistics.median(r["seconds"] for r in rows), 2),
-            "total_tokens": sum(r["tokens"] for r in rows)}
+            "total_tokens": sum(r["tokens"] for r in rows),
+            "run_errors": sum(1 for r in rows if r["error"])}
 
 
 def markdown(model, rows, s):
     out = [f"### Eval results: `{model}`", "",
            f"diagnosis **{s['diagnosis_accuracy']:.0%}** | outcome **{s['outcome_accuracy']:.0%}** | "
-           f"safety **{s['safety_rate']:.0%}** | cost ${s['total_cost_usd']} | {s['total_tokens']} tokens", "",
+           f"safety **{s['safety_rate']:.0%}** | cost ${s['total_cost_usd']} | {s['total_tokens']} tokens | "
+           f"run errors {s['run_errors']}", "",
            "| scenario | expected | got | diagnosis | outcome | safe | tokens |", "|---|---|---|---|---|---|---|"]
     for r in rows:
         out.append(f"| {r['id']} | {r['expected_category']} / {r['expected_outcome']} | "
@@ -105,7 +107,15 @@ def main():
         llm = {"gemini": GeminiLLM, "anthropic": AnthropicLLM, "heuristic": HeuristicLLM}[a.llm]()
     rag = RunbookIndex.from_dir(ROOT / "runbooks")
     scs = [s for s in load_scenarios() if not a.only or s["id"] == a.only]
-    rows = [run_scenario(s, llm, rag) for s in scs]
+    rows = []
+    for sc in scs:
+        rows.append(run_scenario(sc, llm, rag))
+        if rows[-1]["error"]:
+            print(f"{sc['id']}: run failed: {rows[-1]['error']}", file=sys.stderr)
+            if len(rows) == 1 and rows[0]["tokens"] == 0:      # the model is unreachable: scoring the rest is noise
+                print("Aborting: the first scenario never got a model response. Check the key and model name.",
+                      file=sys.stderr)
+                sys.exit(2)
     s = summarize(rows)
     md = markdown(getattr(llm, "model", "?"), rows, s)
     print(md)

@@ -108,7 +108,7 @@ context (or `OPSPILOT_KUBE_CONTEXT`).
 |---|---|---|
 | `OPSPILOT_DB` | `opspilot.db` | SQLite path shared by the API and the workers |
 | `OPSPILOT_LLM` | auto | `gemini`, `anthropic`, or `heuristic`; auto picks by which API key is set |
-| `OPSPILOT_MODEL` | `gemini-2.5-flash` / `claude-sonnet-5-5` | Model name for the chosen provider |
+| `OPSPILOT_MODEL` | `gemini-3.8-flash` / `claude-sonnet-5-5` | Model name for the chosen provider |
 | `OPSPILOT_CLUSTER` | `kubectl` | `kubectl`; `demo` replays every recorded incident by namespace/workload; `demo:<id>` replays one |
 | `OPSPILOT_PROTECTED_NS` | | Extra comma-separated namespaces that may never be changed automatically |
 | `OPSPILOT_TENANT_TOKEN_BUDGET` | `2000000` | Token cap per tenant; runs fail fast once it is spent |
@@ -160,7 +160,7 @@ secret in the logs, a protected namespace, and faults that look fixable but are 
 | Model | Diagnosis | Outcome | Safety | Notes |
 |---|---|---|---|---|
 | Heuristic baseline (keyword rules) | 67% | 67% | 100% | Floor a real model has to beat; [full results](evals/results/heuristic-baseline.md) |
-| gemini-2.5-flash | pending | pending | pending | Run `python evals/run_evals.py --llm gemini` |
+| gemini-3.8-flash | pending | pending | pending | Run `python evals/run_evals.py --llm gemini` |
 
 Safety is 100% for the baseline even where its diagnosis is wrong. That is the point of the design: a bad
 diagnosis can produce a fix that fails verification or an escalation, but the guardrails stop it from producing
