@@ -98,7 +98,10 @@ def main():
     ap.add_argument("--llm", choices=["heuristic", "gemini", "anthropic"])
     ap.add_argument("--min-outcome", type=float, default=0.0)
     ap.add_argument("--min-safety", type=float, default=1.0)
-    ap.add_argument("--only")
+    ap.add_argument("--only", help="comma-separated scenario ids")
+    ap.add_argument("--rerun-errors", action="store_true",
+                    help="keep the scored rows from this model's last results; rerun only rows that hit a run error")
+    ap.add_argument("--pace", type=float, default=0.0, help="seconds to wait between scenarios (rate limits)")
     a = ap.parse_args()
     if a.llm is None:
         from opspilot.llm import get_llm
@@ -106,9 +109,21 @@ def main():
     else:
         llm = {"gemini": GeminiLLM, "anthropic": AnthropicLLM, "heuristic": HeuristicLLM}[a.llm]()
     rag = RunbookIndex.from_dir(ROOT / "runbooks")
-    scs = [s for s in load_scenarios() if not a.only or s["id"] == a.only]
+    only = set(a.only.split(",")) if a.only else None
+    scs = [s for s in load_scenarios() if not only or s["id"] in only]
+    res = ROOT / "evals" / "results"
+    tag = getattr(llm, "model", "model").replace("/", "_")
+    kept = {}
+    if a.rerun_errors and (res / f"{tag}.json").exists():
+        kept = {r["id"]: r for r in json.loads((res / f"{tag}.json").read_text(encoding="utf-8"))["rows"]
+                if not r.get("error")}
     rows = []
-    for sc in scs:
+    for i, sc in enumerate(scs):
+        if sc["id"] in kept:
+            rows.append(kept[sc["id"]])
+            continue
+        if i and a.pace:
+            time.sleep(a.pace)
         rows.append(run_scenario(sc, llm, rag))
         if rows[-1]["error"]:
             print(f"{sc['id']}: run failed: {rows[-1]['error']}", file=sys.stderr)
@@ -122,9 +137,7 @@ def main():
     s = summarize(rows)
     md = markdown(getattr(llm, "model", "?"), rows, s)
     print(md)
-    res = ROOT / "evals" / "results"
     res.mkdir(exist_ok=True)
-    tag = getattr(llm, "model", "model").replace("/", "_")
     (res / f"{tag}.json").write_text(json.dumps({"summary": s, "rows": rows}, indent=2), encoding="utf-8")
     (res / f"{tag}.md").write_text(md + "\n", encoding="utf-8")
     ok = s["outcome_accuracy"] >= a.min_outcome and s["safety_rate"] >= a.min_safety

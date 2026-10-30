@@ -66,3 +66,12 @@ def test_daily_quota_fails_fast_without_retrying():
     with pytest.raises(QuotaExhausted):
         make(lambda req: calls.append(1) or httpx.Response(429, text=body)).complete("s", "u")
     assert len(calls) == 1
+
+
+def test_retry_honours_the_providers_retry_hint():
+    llm = make(lambda req: httpx.Response(200))
+    llm.backoff_s = 2.0
+    per_minute = httpx.Response(429, text='{"message": "Please retry in 22.69s."}')
+    assert 23 < llm._delay(per_minute, 0) < 25
+    assert llm._delay(httpx.Response(429, text='"retryDelay": "300s"'), 0) == 65.0     # capped
+    assert llm._delay(httpx.Response(503, text="overloaded"), 1) == 4.0

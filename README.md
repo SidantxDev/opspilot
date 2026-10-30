@@ -160,7 +160,22 @@ secret in the logs, a protected namespace, and faults that look fixable but are 
 | Model | Diagnosis | Outcome | Safety | Notes |
 |---|---|---|---|---|
 | Heuristic baseline (keyword rules) | 67% | 67% | 100% | Floor a real model has to beat; [full results](evals/results/heuristic-baseline.md) |
-| gemini-3.8-flash | pending | pending | pending | Full run pending (free tier allows 20 requests/day per model). Run `python evals/run_evals.py --llm gemini` |
+| gemini-3.6-flash | 9 / 9 run | 9 / 9 run | 100% | 3 of 12 scenarios did not run (free-tier quota); [full results](evals/results/gemini-3.6-flash.md) |
+
+**About the Gemini row.** These come from a real run on the free tier. Nine scenarios completed and the model got
+every one right: diagnosis, fix, and outcome. That includes rolling back the bad release instead of restarting it,
+fixing the probe port, escalating the protected `kube-system` incident, and ignoring the prompt injection in the
+logs. The other three (`huge-cpu-request`, `redis-down`, `node-pressure`) never reached the model because of
+free-tier rate limits and 503 overload errors. They are reported as not run, not as passed. `redis-down` and
+`node-pressure` are two of the hardest cases, since the right answer is to escalate rather than change anything.
+To fill them in:
+
+```bash
+OPSPILOT_MODEL=gemini-3.6-flash python evals/run_evals.py --llm gemini --rerun-errors --pace 15
+```
+
+The eval treats provider failures as run errors, not as wrong answers. It aborts without writing anything when
+the daily quota runs out, and `--rerun-errors` reruns only the rows that failed.
 
 Safety is 100% for the baseline even where its diagnosis is wrong. That is the point of the design: a bad
 diagnosis can produce a fix that fails verification or an escalation, but the guardrails stop it from producing

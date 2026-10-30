@@ -93,10 +93,19 @@ class GeminiLLM:
             except self.httpx.TimeoutException:
                 if last:
                     raise
+                r = None
             else:
                 if r.status_code not in self.RETRYABLE or last or "PerDay" in r.text:
                     return r
-            time.sleep(self.backoff_s * 2 ** attempt)
+            time.sleep(self._delay(r, attempt))
+
+    def _delay(self, r, attempt):
+        """Exponential backoff, or the provider's own "retry in Ns" hint when it gives one (capped at 65s)."""
+        base = self.backoff_s * 2 ** attempt
+        hint = re.search(r'retry in ([\d.]+)s|"retryDelay":\s*"([\d.]+)s"', r.text) if r is not None else None
+        if hint and self.backoff_s:
+            return min(65.0, max(base, float(hint.group(1) or hint.group(2)) + 1))
+        return base
 
 
 def _section(prompt, name):
