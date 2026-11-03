@@ -19,14 +19,15 @@ def load_scenarios(path=None):
     return yaml.safe_load(Path(path or ROOT / "evals" / "scenarios.yaml").read_text(encoding="utf-8"))
 
 
-def make_cluster():
-    """OPSPILOT_CLUSTER=kubectl (default), demo (every recorded incident, routed by target), or demo:<scenario-id>."""
+def make_cluster(store=None):
+    """OPSPILOT_CLUSTER=kubectl (default), demo (every recorded incident, routed by target), or demo:<scenario-id>.
+    With a store, demo health comes from the shared action ledger, so any worker process can verify any fix."""
     spec = os.environ.get("OPSPILOT_CLUSTER", "kubectl")
     if spec == "demo":
-        return DemoCluster(load_scenarios())
+        return DemoCluster(load_scenarios(), store)
     if spec.startswith("demo:"):
         sid = spec.split(":", 1)[1]
-        return FakeCluster(next(s for s in load_scenarios() if s["id"] == sid))
+        return FakeCluster(next(s for s in load_scenarios() if s["id"] == sid), store)
     return KubectlCluster(context=os.environ.get("OPSPILOT_KUBE_CONTEXT"))
 
 
@@ -40,5 +41,6 @@ def make_ctx_factory(store, llm, cluster, rag, **overrides):
 def make_worker(store=None, llm=None, cluster=None, rag=None, **kw):
     store = store or Store(os.environ.get("OPSPILOT_DB", "opspilot.db"))
     rag = rag or RunbookIndex.from_dir(ROOT / "runbooks")
-    make = make_ctx_factory(store, llm or get_llm(), cluster or make_cluster(), rag)
+    make = make_ctx_factory(store, llm or get_llm(), cluster or make_cluster(store), rag)
+    kw.setdefault("lease_s", float(os.environ.get("OPSPILOT_LEASE_S", "30")))
     return Worker(store, build_graph(), make, **kw)

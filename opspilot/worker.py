@@ -30,6 +30,7 @@ class Worker:
         threading.Thread(target=beat, daemon=True).start()
         ctx = self.make_ctx(job)
         ctx.lease_ok = lambda: not lost.is_set()
+        ctx.worker_id, ctx.fence = self.id, job["fence"]
         try:
             if self.graph.run(ctx) == "interrupted":
                 self.store.pause(jid, self.id)

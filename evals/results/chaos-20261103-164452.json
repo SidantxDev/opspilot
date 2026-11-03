@@ -1,0 +1,25 @@
+{
+  "summary": {
+    "jobs": 200,
+    "workers": 6,
+    "seconds": 192.8,
+    "processes_killed": 254,
+    "processes_crashed_or_exited": 89,
+    "processes_started": 349,
+    "zombie_writes_refused": 26,
+    "lease_losses": 26,
+    "resumes_from_checkpoint": 454,
+    "fixes_committed_exactly_once": 184,
+    "cluster_effects": 206,
+    "identical_reissues_after_crash_in_apply_window": 22,
+    "apply_skipped_already_committed": 6,
+    "outcomes": {
+      "resolved": 117,
+      "fix_failed": 67,
+      "escalated": 16
+    },
+    "invariant_violations": 0,
+    "seed": 11
+  },
+  "violations": []
+}

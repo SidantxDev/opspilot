@@ -23,6 +23,8 @@ class RunContext:
     verify_timeout: float = 60.0
     max_revisions: int = 2
     lease_ok: Callable[[], bool] = lambda: True
+    worker_id: Any = None      # set by the Worker; None (direct graph runs) skips fencing
+    fence: int = 0
     fault_hook: Callable[[str, str], None] = lambda point, node: None
     config: dict = field(default_factory=dict)
 

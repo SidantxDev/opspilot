@@ -1,6 +1,9 @@
 """Cluster access. FakeCluster replays recorded incidents (evals, tests, demos); KubectlCluster talks to a real one.
 
-Every mutating call is idempotent (declarative set/scale/undo-to-previous), because a crashed worker may repeat it.
+Every mutating call is idempotent, because a crashed worker may re-issue it. `prepare` turns a proposal into a
+concrete change *once*, before the intent is written to the ledger; e.g. "rollback" becomes "set the pod template
+to revision N's template", which is safe to repeat, where `kubectl rollout undo` twice would flip back to the bad
+release.
 """
 import json
 import re
@@ -32,8 +35,9 @@ def fix_matches(correct, action, params):
 class FakeCluster:
     """Replays one scenario. Becomes healthy only if an accepted fix was applied."""
 
-    def __init__(self, scenario):
+    def __init__(self, scenario, store=None):
         self.sc = scenario
+        self.store = store     # optional: derive health from the shared action ledger (multi-process demo)
         self.applied = []      # every apply() call, in order (checked by evals for forbidden actions)
         self.reads = {"logs": 0, "events": 0, "describe": 0}
 
@@ -50,11 +54,19 @@ class FakeCluster:
     def describe(self, ns, workload):
         return self._read("describe")
 
-    def apply(self, ns, workload, action, params):
-        self.applied.append({"namespace": ns, "workload": workload, "action": action, "params": params})
+    def prepare(self, ns, workload, action, params):
+        return params
+
+    def apply(self, ns, workload, action, params, op_id=None):
+        self.applied.append({"namespace": ns, "workload": workload, "action": action, "params": params,
+                             "op_id": op_id})
         return f"applied {action} {params} to {ns}/{workload}"
 
     def is_healthy(self, ns, workload):
+        if self.store is not None:   # the latest committed change wins, whichever worker process made it
+            last = self.store.latest_action_for(ns, workload)
+            return bool(last) and any(fix_matches(c, last["action"], last["params"])
+                                      for c in self.sc.get("correct", []))
         return any(fix_matches(c, a["action"], a["params"])
                    for c in self.sc.get("correct", []) for a in self.applied)
 
@@ -65,8 +77,9 @@ class FakeCluster:
 class DemoCluster:
     """Routes each (namespace, workload) to the recorded scenario for it, so a live demo can replay any incident."""
 
-    def __init__(self, scenarios):
-        self.by_target = {(s["incident"]["namespace"], s["incident"]["workload"]): FakeCluster(s) for s in scenarios}
+    def __init__(self, scenarios, store=None):
+        self.by_target = {(s["incident"]["namespace"], s["incident"]["workload"]): FakeCluster(s, store)
+                          for s in scenarios}
 
     def _for(self, ns, workload):
         c = self.by_target.get((ns, workload))
@@ -83,8 +96,11 @@ class DemoCluster:
     def describe(self, ns, workload):
         return self._for(ns, workload).describe(ns, workload)
 
-    def apply(self, ns, workload, action, params):
-        return self._for(ns, workload).apply(ns, workload, action, params)
+    def prepare(self, ns, workload, action, params):
+        return self._for(ns, workload).prepare(ns, workload, action, params)
+
+    def apply(self, ns, workload, action, params, op_id=None):
+        return self._for(ns, workload).apply(ns, workload, action, params, op_id)
 
     def is_healthy(self, ns, workload):
         return self._for(ns, workload).is_healthy(ns, workload)
@@ -95,8 +111,7 @@ class DemoCluster:
 
 class KubectlCluster:
     """Real cluster via the kubectl binary. Arguments are passed as a list (never through a shell) and names
-    are validated first. NOTE: written against kubectl docs; run it against a throwaway cluster (kind/minikube)
-    before trusting it."""
+    are validated first. Exercised end to end on minikube by evals/minikube_e2e.py."""
 
     def __init__(self, kubectl="kubectl", context=None):
         self.base = [kubectl] + (["--context", context] if context else [])
@@ -104,6 +119,14 @@ class KubectlCluster:
     def _run(self, args, timeout=30):
         p = subprocess.run(self.base + args, capture_output=True, text=True, timeout=timeout)
         return (p.stdout + ("\n" + p.stderr if p.returncode else "")).strip()
+
+    def _must(self, args, timeout=30):
+        """Writes: a failure raises, so the worker retries (re-issuing the same ledgered change) instead of
+        recording a change that never happened."""
+        p = subprocess.run(self.base + args, capture_output=True, text=True, timeout=timeout)
+        if p.returncode:
+            raise RuntimeError(f"kubectl {' '.join(args[:4])} failed: {p.stderr.strip()[:300]}")
+        return p.stdout.strip()
 
     @staticmethod
     def _check(ns, workload):
@@ -128,29 +151,55 @@ class KubectlCluster:
         first = next((p for p in pods.splitlines() if f"/{workload}-" in p), None)
         return dep + ("\n" + self._run(["-n", ns, "describe", first]) if first else "")
 
-    def apply(self, ns, workload, action, params):
+    def prepare(self, ns, workload, action, params):
+        """Resolve a proposal into a concrete, repeatable change before it is written to the ledger."""
+        self._check(ns, workload)
+        if action != "rollback":
+            return params
+
+        def rev(o):
+            return int(o["metadata"].get("annotations", {}).get("deployment.kubernetes.io/revision", 0))
+        dep = json.loads(self._must(["-n", ns, "get", f"deploy/{workload}", "-o", "json"]))
+        owned = [rs for rs in json.loads(self._must(["-n", ns, "get", "rs", "-o", "json"]))["items"]
+                 if any(o.get("kind") == "Deployment" and o.get("name") == workload
+                        for o in rs["metadata"].get("ownerReferences", []))]
+        prev = max((rs for rs in owned if rev(rs) < rev(dep)), key=rev, default=None)
+        if prev is None:
+            raise ValueError(f"{ns}/{workload} has no earlier revision to roll back to")
+        tpl = prev["spec"]["template"]
+        tpl.get("metadata", {}).get("labels", {}).pop("pod-template-hash", None)
+        return {"to_revision": rev(prev), "template": tpl}
+
+    def apply(self, ns, workload, action, params, op_id=None):
         self._check(ns, workload)
         d = f"deploy/{workload}"
         n = ["-n", ns]
         if action == "set_memory_limit":
-            return self._run(n + ["set", "resources", d, f"--limits=memory={params['memory']}"])
-        if action == "set_cpu_request":
-            return self._run(n + ["set", "resources", d, f"--requests=cpu={params['cpu']}"])
-        if action == "set_image":
-            return self._run(n + ["set", "image", d, f"*={params['image']}"])
-        if action == "rollback":
-            return self._run(n + ["rollout", "undo", d])
-        if action == "scale":
-            return self._run(n + ["scale", d, f"--replicas={int(params['replicas'])}"])
-        if action == "set_env":
-            return self._run(n + ["set", "env", d, f"{params['key']}={params.get('value', '')}"])
-        if action == "set_probe_port":
+            out = self._must(n + ["set", "resources", d, f"--limits=memory={params['memory']}"])
+        elif action == "set_cpu_request":
+            out = self._must(n + ["set", "resources", d, f"--requests=cpu={params['cpu']}"])
+        elif action == "set_image":
+            out = self._must(n + ["set", "image", d, f"*={params['image']}"])
+        elif action == "rollback" and "template" in params:   # declarative: same template however often it runs
+            patch = [{"op": "replace", "path": "/spec/template", "value": params["template"]}]
+            out = self._must(n + ["patch", d, "--type=json", "-p", json.dumps(patch)])
+        elif action == "rollback":
+            raise ValueError("rollback must be prepared into a concrete revision first")
+        elif action == "scale":
+            out = self._must(n + ["scale", d, f"--replicas={int(params['replicas'])}"])
+        elif action == "set_env":
+            out = self._must(n + ["set", "env", d, f"{params['key']}={params.get('value', '')}"])
+        elif action == "set_probe_port":
             patch = [{"op": "replace", "path": "/spec/template/spec/containers/0/readinessProbe/httpGet/port",
                       "value": int(params["port"])}]
-            return self._run(n + ["patch", d, "--type=json", "-p", json.dumps(patch)])
-        if action == "restart":
-            return self._run(n + ["rollout", "restart", d])
-        raise ValueError(f"unsupported action {action}")
+            out = self._must(n + ["patch", d, "--type=json", "-p", json.dumps(patch)])
+        elif action == "restart":
+            out = self._must(n + ["rollout", "restart", d])
+        else:
+            raise ValueError(f"unsupported action {action}")
+        if op_id and NAME_RE.match(op_id):    # attribution on the object itself: "who changed this?"
+            self._must(n + ["annotate", d, f"opspilot.io/last-change={op_id}", "--overwrite"])
+        return out
 
     def is_healthy(self, ns, workload):
         return "successfully rolled out" in self._run(

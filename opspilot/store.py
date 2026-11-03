@@ -5,6 +5,9 @@ Guarantees:
   * lease-based claiming: a worker that dies simply stops heartbeating, and the job is re-claimed
   * attempt counting with a ceiling, so a poison job cannot loop forever
   * a checkpoint after every graph node, so a re-claimed job resumes instead of restarting
+  * a fencing token per claim: a worker that lost its lease (GC pause, partition) cannot record a cluster change
+  * an action ledger (intent -> done): a cluster change is recorded before it happens and committed after, so a
+    resumed job either skips a change that already landed or re-issues the exact same concrete change
 """
 import contextlib
 import json
@@ -18,7 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs(
   status TEXT NOT NULL DEFAULT 'queued',
   attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3,
   run_after REAL NOT NULL DEFAULT 0, lease_owner TEXT, lease_until REAL,
-  error TEXT, created REAL, updated REAL,
+  error TEXT, created REAL, updated REAL, fence INTEGER NOT NULL DEFAULT 0,
   UNIQUE(tenant, idem_key));
 CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(status, run_after);
 CREATE TABLE IF NOT EXISTS checkpoints(
@@ -34,6 +37,11 @@ CREATE TABLE IF NOT EXISTS usage(
   id INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, job_id INTEGER,
   tokens_in INTEGER, tokens_out INTEGER, cost_usd REAL, model TEXT, ts REAL);
 CREATE INDEX IF NOT EXISTS usage_tenant ON usage(tenant);
+CREATE TABLE IF NOT EXISTS actions(
+  job_id INTEGER PRIMARY KEY, namespace TEXT NOT NULL, workload TEXT NOT NULL, action TEXT NOT NULL,
+  params TEXT NOT NULL, status TEXT NOT NULL, fence INTEGER NOT NULL, worker TEXT, issues INTEGER NOT NULL,
+  result TEXT, started REAL, finished REAL);
+CREATE INDEX IF NOT EXISTS actions_target ON actions(namespace, workload, finished);
 """
 
 # statuses: queued -> running -> (waiting_approval -> queued -> running)* -> succeeded | failed
@@ -44,6 +52,9 @@ class Store:
         self.path = str(path)
         c = self._connect()
         try:
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='jobs'").fetchone() and not any(
+                    r["name"] == "fence" for r in c.execute("PRAGMA table_info(jobs)")):
+                c.execute("ALTER TABLE jobs ADD COLUMN fence INTEGER NOT NULL DEFAULT 0")   # pre-0.3 databases
             c.executescript(SCHEMA)
         finally:
             c.close()
@@ -100,7 +111,7 @@ class Store:
                               ("worker lost the lease too many times; attempts exhausted", now, r["id"]))
                     continue
                 c.execute("UPDATE jobs SET status='running', lease_owner=?, lease_until=?, "
-                          "attempts=attempts+1, updated=? WHERE id=?", (worker, now + lease_s, now, r["id"]))
+                          "attempts=attempts+1, fence=fence+1, updated=? WHERE id=?", (worker, now + lease_s, now, r["id"]))
                 return self._job(c, r["id"])
 
     def heartbeat(self, job_id, worker, lease_s=30.0):
@@ -129,6 +140,61 @@ class Store:
                       "attempts=MAX(attempts-1,0), updated=? WHERE id=? AND lease_owner=?",
                       (time.time(), job_id, worker))
 
+    # ---- action ledger (fenced, exactly-once recording of cluster changes) ---
+    def get_action(self, job_id):
+        c = self._connect()
+        try:
+            return self._action(c, job_id)
+        finally:
+            c.close()
+
+    @staticmethod
+    def _action(c, job_id):
+        r = c.execute("SELECT * FROM actions WHERE job_id=?", (job_id,)).fetchone()
+        return {**dict(r), "params": json.loads(r["params"])} if r else None
+
+    @staticmethod
+    def _holds_lease(c, job_id, worker, fence):
+        return c.execute("SELECT 1 FROM jobs WHERE id=? AND lease_owner=? AND fence=? AND status='running' "
+                         "AND lease_until>=?", (job_id, worker, fence, time.time())).fetchone() is not None
+
+    def begin_action(self, job_id, worker, fence, ns, workload, action, params):
+        """Record the intent to change the cluster. Returns the ledger row, or None if this worker no longer holds
+        the job (fenced). A row that is already 'done' means the change landed before a crash: do not repeat it.
+        A row still 'pending' means a crash hit mid-change: re-issue the SAME concrete params (idempotent)."""
+        now = time.time()
+        with self._tx() as c:
+            if not self._holds_lease(c, job_id, worker, fence):
+                return None
+            row = self._action(c, job_id)
+            if row is None:
+                c.execute("INSERT INTO actions(job_id,namespace,workload,action,params,status,fence,worker,issues,"
+                          "started) VALUES(?,?,?,?,?,'pending',?,?,1,?)",
+                          (job_id, ns, workload, action, json.dumps(params), fence, worker, now))
+            elif row["status"] == "pending":
+                c.execute("UPDATE actions SET fence=?, worker=?, issues=issues+1 WHERE job_id=?",
+                          (fence, worker, job_id))
+            return self._action(c, job_id)
+
+    def complete_action(self, job_id, worker, fence, result):
+        """Commit the change. False if fenced: a newer owner exists, and it will reconcile the pending row."""
+        with self._tx() as c:
+            if not self._holds_lease(c, job_id, worker, fence):
+                return False
+            cur = c.execute("UPDATE actions SET status='done', result=?, finished=? WHERE job_id=? AND fence=?",
+                            (str(result)[:2000], time.time(), job_id, fence))
+            return cur.rowcount > 0
+
+    def latest_action_for(self, ns, workload):
+        """The most recent committed change to a workload (used by the demo cluster to share state across workers)."""
+        c = self._connect()
+        try:
+            r = c.execute("SELECT job_id FROM actions WHERE namespace=? AND workload=? AND status='done' "
+                          "ORDER BY finished DESC LIMIT 1", (ns, workload)).fetchone()
+            return self._action(c, r["job_id"]) if r else None
+        finally:
+            c.close()
+
     # ---- approvals ---------------------------------------------------------
     def add_approval(self, job_id, decision, by=None, note=None):
         """One decision per job. Returns False if the job is not waiting or was already decided."""
@@ -150,11 +216,16 @@ class Store:
             c.close()
 
     # ---- checkpoints / events ---------------------------------------------
-    def save_checkpoint(self, job_id, node, state):
+    def save_checkpoint(self, job_id, node, state, worker=None, fence=None):
+        """Fenced when a worker passes its token: False means a newer owner exists and nothing was written.
+        Without this, a zombie that wakes up after the job finished could overwrite the final state."""
         with self._tx() as c:
+            if worker is not None and not self._holds_lease(c, job_id, worker, fence):
+                return False
             seq = c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM checkpoints WHERE job_id=?", (job_id,)).fetchone()[0]
             c.execute("INSERT INTO checkpoints(job_id,seq,node,state,ts) VALUES(?,?,?,?,?)",
                       (job_id, seq, node, json.dumps(state), time.time()))
+            return True
 
     def latest_checkpoint(self, job_id):
         c = self._connect()

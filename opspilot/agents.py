@@ -8,7 +8,7 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from .graph import END, Graph, Interrupt
+from .graph import END, Graph, Interrupt, LeaseLost
 from .policy import validate
 
 SYSTEM = """You are an SRE assistant diagnosing a failing Kubernetes workload.
@@ -101,10 +101,32 @@ def build_graph():
 
     @g.node("apply")
     def apply(state, ctx):
-        if state.get("applied"):          # idempotent: never apply twice after a resume
+        """Exactly-once *recording*, idempotent *effect*: intent row -> cluster change -> commit row, all fenced.
+
+        Crash before the change: the pending row is re-issued with the same concrete params.
+        Crash after the change but before the commit: same, and the change is declarative, so re-issuing is a no-op.
+        Crash after the commit: the done row is found and the cluster is not touched again.
+        A worker that lost its lease (stale fence) is refused before it can touch the cluster."""
+        if state.get("applied"):
             return {}
         inc, p = state["incident"], state["proposal"]
-        result = ctx.cluster.apply(inc["namespace"], inc["workload"], p["action"], p.get("params") or {})
+        ns, wl = inc["namespace"], inc["workload"]
+        row = ctx.store.get_action(ctx.job_id)
+        concrete = row["params"] if row else ctx.cluster.prepare(ns, wl, p["action"], p.get("params") or {})
+        row = ctx.store.begin_action(ctx.job_id, ctx.worker_id, ctx.fence, ns, wl, p["action"], concrete)
+        if row is None:
+            ctx.store.add_event(ctx.job_id, "fenced", "apply", {"worker": ctx.worker_id, "fence": ctx.fence})
+            raise LeaseLost()
+        if row["status"] == "done":
+            ctx.store.add_event(ctx.job_id, "apply_skipped", "apply", {"reason": "already committed in ledger"})
+            return {"applied": True, "apply_result": row["result"]}
+        if row["issues"] > 1:
+            ctx.store.add_event(ctx.job_id, "apply_reissued", "apply", {"issues": row["issues"]})
+        result = ctx.cluster.apply(ns, wl, row["action"], row["params"], op_id=f"job-{ctx.job_id}-f{ctx.fence}")
+        ctx.fault("effect", "apply")      # the dangerous window: change made, not yet committed
+        if not ctx.store.complete_action(ctx.job_id, ctx.worker_id, ctx.fence, result):
+            ctx.store.add_event(ctx.job_id, "fenced", "apply", {"worker": ctx.worker_id, "fence": ctx.fence})
+            raise LeaseLost()
         return {"applied": True, "apply_result": str(result)[:500]}
 
     @g.node("verify")

@@ -9,8 +9,14 @@ production:
 
 - **Durable execution.** Every step is checkpointed to SQLite. Kill the worker at any point and another one
   resumes from the last completed step, without redoing it and without applying a fix twice.
-- **Leases and fencing.** Workers claim jobs under a heartbeated lease. A crashed worker's job is reclaimed, and
-  the old worker is fenced off so it cannot write results after losing the lease.
+- **Leases, fencing tokens and an action ledger.** Workers claim jobs under a heartbeated lease, and every claim
+  gets a new fencing token. A cluster change is written to a ledger as an intent before it happens and committed
+  after, both checked against the token. A worker that froze past its lease and wakes up as a zombie is refused
+  before it can touch the cluster; a crash mid-change re-issues the *same* concrete change; a crash after the
+  commit never touches the cluster again.
+- **Proven under chaos and on a real cluster.** A chaos run hard-kills worker processes at random under load,
+  crashes them inside the apply window and freezes them past their lease, then checks five invariants. A
+  minikube run breaks real deployments and lets OpsPilot fix them through `kubectl`.
 - **Human in the loop.** The run parks in `waiting_approval` (no worker held, no attempt consumed) until someone
   approves or rejects through the API.
 - **Guardrails outside the model.** The model can only pick from a closed set of actions, on the alerting
@@ -56,14 +62,14 @@ person clicks approve.*
 
 | Module | Responsibility |
 |---|---|
-| `store.py` | Job queue with leases, retries with exponential backoff, idempotent enqueue, checkpoints, event trace, approvals, per-tenant token usage |
+| `store.py` | Job queue with leases and fencing tokens, retries with exponential backoff, idempotent enqueue, checkpoints, the action ledger, event trace, approvals, per-tenant token usage |
 | `worker.py` | Claims a job, heartbeats the lease, maps the run's result to a job status (succeeded, retry, failed, paused) |
 | `graph.py` | Minimal state-graph engine: nodes, conditional edges, checkpoint after every node, resume, interrupts |
 | `agents.py` | The incident-response nodes and the system prompt |
 | `policy.py` | Deterministic guardrails: action allowlist, parameter bounds, protected namespaces, confidence floor |
 | `rag.py` | BM25 retrieval over the markdown runbooks, chunked by heading |
 | `llm.py` | Gemini (REST), Anthropic, and a deterministic heuristic baseline behind one interface |
-| `cluster.py` | `KubectlCluster` for real clusters; `FakeCluster` / `DemoCluster` replay recorded scenarios |
+| `cluster.py` | `KubectlCluster` for real clusters (tested on minikube); `FakeCluster` / `DemoCluster` replay recorded scenarios |
 | `api.py`, `static/` | REST API, Prometheus `/metrics`, and the approval console |
 | `mcp_server.py` | MCP tools for other agents: diagnostics, runbook search, guardrail check, filing incidents |
 | `runtime.py` | Per-run context: the only path to the model, enforcing a per-tenant token budget and recording usage |
@@ -189,10 +195,56 @@ python evals/run_evals.py --llm heuristic --min-outcome 0.6 --min-safety 1.0
 python evals/run_evals.py --llm gemini --only redis-down     # one scenario
 ```
 
+## Chaos run
+
+`evals/chaos.py` runs 6 worker processes against one database and attacks them in three ways: the parent
+hard-kills a random worker every ~0.6 s, workers crash themselves at random steps (often inside the apply window,
+after the cluster changed but before the ledger commit), and workers freeze past their lease, then wake up as
+zombies after another worker owns the job. Every cluster change from any process goes into a separate effects
+log, and five invariants are checked at the end.
+
+| 200 incidents, seed 11 | |
+|---|---|
+| Worker processes hard-killed / self-crashed | 254 / 89 |
+| Resumes from checkpoint | 454 |
+| Zombie writes refused by the fence | 26 |
+| Fixes committed in the ledger | 184, each exactly once |
+| Re-issued changes after a crash in the apply window | 22, all byte-identical to the original |
+| Outcomes that differ from a calm single-worker run | **0** |
+| Invariant violations | **0** ([results](evals/results/chaos-20261103-164452.json)) |
+
+**The chaos run found a real bug.** The first 200-incident run had 9 violations in 5 incidents. A worker froze
+before a step, another worker finished the whole incident, and then the zombie woke up and wrote its stale
+checkpoint on top of the final one. The cluster was never changed twice, because the action ledger was already
+fenced, but the recorded outcome was lost. Checkpoint writes are now fenced as well, and
+`test_zombie_cannot_overwrite_the_final_checkpoint` reproduces the bug. A smaller chaos run gates CI.
+
+## On a real cluster (minikube)
+
+`evals/minikube_e2e.py` breaks real deployments in a throwaway namespace and lets OpsPilot fix them through
+`KubectlCluster`, with the deterministic baseline model so the run is free and repeatable:
+
+| Workload | Broken by | Action | Outcome |
+|---|---|---|---|
+| `api-oom` | 48Mi limit, process allocates 150M | `set_memory_limit` 192Mi | resolved |
+| `checkout` | bad image tag pushed over a healthy release | `rollback` | resolved |
+| `search` | scaled to 0 | `scale` 3 | resolved |
+| `web-probe` | readiness probe on the wrong port | `restart` (baseline miss) | fix_failed, caught by verification |
+| `checkout-crash` | bad image tag, **worker killed right after the rollback hit the cluster** | `rollback`, re-issued | resolved, still 2 revisions |
+
+The last row is the reason for the ledger and `prepare`. A plain `kubectl rollout undo` repeated after a crash
+flips back to the broken release. OpsPilot resolves the rollback to revision N's pod template once, records it,
+and re-issuing it is a no-op: the deployment still has exactly 2 revisions. Every change also carries an
+`opspilot.io/last-change=job-<id>-f<fence>` annotation, so `kubectl describe` shows who changed it.
+[Results](evals/results/minikube-20261103-164011.json).
+
 ## What the tests prove
 
 - A worker crash after any node resumes from the checkpoint without re-running that node
-- A crash after `apply`, or between the cluster change and its checkpoint, never applies the fix twice
+- A crash after the ledger commit never touches the cluster again; a crash inside the apply window re-issues the
+  identical concrete change; a rollback is resolved to a revision once, so a resumed rollback cannot drift
+- A zombie worker (frozen past its lease while another worker took over) is refused before it changes the cluster
+- The fencing token moves on every claim, including across approval pauses; old databases migrate in place
 - Only one worker can claim a job; an expired lease is reclaimed and the old owner is fenced
 - A poison job stops after `max_attempts`; retries respect exponential backoff
 - Enqueue is idempotent per tenant and idempotency key
@@ -209,14 +261,17 @@ python evals/run_evals.py --llm gemini --only redis-down     # one scenario
 - **The eval set is small.** 12 scenarios is enough to catch regressions and show the shape of the problem, not
   to claim a production accuracy number.
 - **`FakeCluster` is a simulation.** It returns recorded evidence and marks the workload healthy when the
-  applied action matches the scenario's correct fix. Its state lives in each worker process, so in demo mode a
-  fix applied by one worker is not seen by another that resumes the job. `KubectlCluster` has not yet been tested
-  against a live cluster.
+  latest committed change in the shared ledger matches the scenario's correct fix. `KubectlCluster` is tested on
+  minikube for four of the eight actions (memory limit, rollback, scale, restart); the others are not yet.
 - **`set_env` cannot know the value.** On a real cluster it sets the missing variable to an empty string,
   which rarely fixes anything. A real deployment should map this action to a secret or config reference
   chosen by the approver.
 - **SQLite means one machine.** Leases and fencing are correct, but the store is a single file. Postgres with
   `SELECT ... FOR UPDATE SKIP LOCKED` is the obvious next step for multiple hosts.
+- **Fencing stops at the database.** The token is checked when the intent is recorded and when it is committed,
+  so a zombie cannot *start* a change. A worker that freezes after recording the intent but before its single
+  `kubectl` call returns can still land that one call late. Closing that gap fully needs the API server to check the token (for example a
+  `resourceVersion` precondition on the patch).
 - **Retrieval is lexical.** BM25 is fine for 8 runbooks; a larger corpus would want dense embeddings and hybrid
   ranking.
 - **No auth on the API.** The tenant comes from a header. Put it behind your gateway.
@@ -224,8 +279,8 @@ python evals/run_evals.py --llm gemini --only redis-down     # one scenario
 
 ## Roadmap
 
-- Real-model eval runs, with the failures fixed and reported here
-- Test `KubectlCluster` on minikube with deliberately broken deployments
-- A chaos run that kills workers at random under load and checks every fix was applied exactly once
+- Finish the Gemini eval (3 scenarios left) and add a real model to the minikube run
+- Cover `set_image`, `set_cpu_request`, `set_probe_port` and `set_env` on minikube
+- `resourceVersion` preconditions so the API server enforces the fence too
 - Postgres store for multi-host workers
 - Dense embeddings and hybrid retrieval once the runbook corpus grows

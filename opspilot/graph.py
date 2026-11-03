@@ -64,7 +64,9 @@ class Graph:
                 store.add_event(job, "interrupt", node, {"reason": str(i)})
                 return "interrupted"
             state = {**state, **updates}
-            store.save_checkpoint(job, node, state)
+            if store.save_checkpoint(job, node, state, ctx.worker_id, ctx.fence) is False:
+                store.add_event(job, "fenced", node, {"worker": ctx.worker_id, "fence": ctx.fence})
+                raise LeaseLost()
             store.add_event(job, "node_end", node, {"ms": round((time.monotonic() - t0) * 1000, 1),
                                                     "updated": sorted(updates)})
             ctx.fault("after", node)
