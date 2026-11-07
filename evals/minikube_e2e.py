@@ -96,8 +96,8 @@ def setup(k, name, manifest, break_image, symptom):
                                    + k("-n", NS, "get", "events", check=False)), 180, f"{name}: {symptom}")
 
 
-def run_incident(store, cluster, rag, name, fault=None):
-    worker = Worker(store, build_graph(), make_ctx_factory(store, HeuristicLLM(), cluster, rag, verify_timeout=180),
+def run_incident(store, cluster, rag, name, fault=None, llm=None):
+    worker = Worker(store, build_graph(), make_ctx_factory(store, llm or HeuristicLLM(), cluster, rag, verify_timeout=180),
                     lease_s=0.5 if fault else 30, backoff_s=0)
     if fault:
         orig = worker.make_ctx
@@ -116,7 +116,7 @@ def run_incident(store, cluster, rag, name, fault=None):
             crashed = True
             time.sleep(0.7)                    # lease expires; a fresh worker takes over below
             worker = Worker(store, build_graph(),
-                            make_ctx_factory(store, HeuristicLLM(), cluster, rag, verify_timeout=180), backoff_s=0)
+                            make_ctx_factory(store, llm or HeuristicLLM(), cluster, rag, verify_timeout=180), backoff_s=0)
             continue
         st = store.get_job(jid)["status"]
         if st == "waiting_approval":

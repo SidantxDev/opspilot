@@ -1,0 +1,72 @@
+{
+  "context": "minikube",
+  "results": [
+    {
+      "workload": "api-oom",
+      "action": "set_memory_limit",
+      "outcome": "resolved",
+      "expected": "resolved",
+      "live_check": true,
+      "annotation": "job-1-f2",
+      "ledger_issues": 1,
+      "crashed_mid_apply": false,
+      "seconds": 3.0,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "checkout",
+      "action": "rollback",
+      "outcome": "resolved",
+      "expected": "resolved",
+      "live_check": true,
+      "annotation": "job-2-f2",
+      "ledger_issues": 1,
+      "crashed_mid_apply": false,
+      "seconds": 2.7,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "search",
+      "action": "scale",
+      "outcome": "resolved",
+      "expected": "resolved",
+      "live_check": true,
+      "annotation": "job-3-f2",
+      "ledger_issues": 1,
+      "crashed_mid_apply": false,
+      "seconds": 45.8,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "web-probe",
+      "action": "restart",
+      "outcome": "fix_failed",
+      "expected": "fix_failed",
+      "live_check": true,
+      "annotation": "job-4-f2",
+      "ledger_issues": 1,
+      "crashed_mid_apply": false,
+      "seconds": 184.2,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "checkout-crash",
+      "action": "rollback",
+      "outcome": "resolved",
+      "expected": "resolved",
+      "live_check": true,
+      "annotation": "job-5-f3",
+      "ledger_issues": 2,
+      "crashed_mid_apply": true,
+      "seconds": 4.5,
+      "error": null,
+      "revisions": 2,
+      "ok": true
+    }
+  ],
+  "kubectl": "{\n  \"clientVersion\": {\n    \"major\": \"1\",\n    \"minor\": \"34\",\n    \"gitVersion\": \"v1.34.1\",\n    \"gitCommit\": \"93248f9ae092f571eb870b7664c534bfc7d00f03\",\n    \"gitTreeState\": \"clean\",\n    \"buildDate\": \"2025-09-09T19:44:50Z\",\n    \"goVersion\": \"go1.24.6\",\n    \"compiler\": \"gc\",\n    \"platform\": \"windows/amd64\"\n  },\n  \"kustomizeVersion\": \"v5.7.1\"\n}\n"
+}

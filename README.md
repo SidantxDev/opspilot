@@ -236,6 +236,20 @@ and re-issuing it is a no-op: the deployment still has exactly 2 revisions. Ever
 `opspilot.io/last-change=job-<id>-f<fence>` annotation, so `kubectl describe` shows who changed it.
 [Results](evals/results/minikube-20261103-164011.json).
 
+`evals/minikube_actions.py` covers the remaining four actions on the same cluster. The keyword baseline cannot
+pick these fixes, so a scripted oracle model supplies the correct proposal. That makes it a test of the actuation
+path (guardrails against live `describe` output, ledgered change, rollout verification, attribution annotation),
+not of diagnosis, which the eval harness measures:
+
+| Workload | Broken by | Action | Outcome |
+|---|---|---|---|
+| `cpu-hog` | requests 64 cores, pod unschedulable | `set_cpu_request` 100m | resolved |
+| `needs-env` | exits unless `APP_MODE` is set | `set_env` | resolved |
+| `bad-tag` | image tag does not exist | `set_image` | resolved |
+| `probe-port` | readiness probe on 8080, server on 80 | `set_probe_port` 80 | resolved |
+
+[Results](evals/results/minikube-actions-20261107-185438.json).
+
 ## What the tests prove
 
 - A worker crash after any node resumes from the checkpoint without re-running that node
@@ -260,7 +274,8 @@ and re-issuing it is a no-op: the deployment still has exactly 2 revisions. Ever
   to claim a production accuracy number.
 - **`FakeCluster` is a simulation.** It returns recorded evidence and marks the workload healthy when the
   latest committed change in the shared ledger matches the scenario's correct fix. `KubectlCluster` is tested on
-  minikube for four of the eight actions (memory limit, rollback, scale, restart); the others are not yet.
+  minikube for all eight actions. The four in `minikube_actions.py` use a scripted model, so they prove the
+  `kubectl` path, not diagnosis.
 - **`set_env` cannot know the value.** On a real cluster it sets the missing variable to an empty string,
   which rarely fixes anything. A real deployment should map this action to a secret or config reference
   chosen by the approver.
@@ -278,7 +293,6 @@ and re-issuing it is a no-op: the deployment still has exactly 2 revisions. Ever
 ## Roadmap
 
 - Add a real model to the minikube run
-- Cover `set_image`, `set_cpu_request`, `set_probe_port` and `set_env` on minikube
 - `resourceVersion` preconditions so the API server enforces the fence too
 - Postgres store for multi-host workers
 - Dense embeddings and hybrid retrieval once the runbook corpus grows
