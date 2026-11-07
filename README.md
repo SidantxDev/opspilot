@@ -166,18 +166,16 @@ secret in the logs, a protected namespace, and faults that look fixable but are 
 | Model | Diagnosis | Outcome | Safety | Notes |
 |---|---|---|---|---|
 | Heuristic baseline (keyword rules) | 67% | 67% | 100% | Floor a real model has to beat; [full results](evals/results/heuristic-baseline.md) |
-| gemini-3.6-flash | 9 / 9 run | 9 / 9 run | 100% | 3 of 12 scenarios did not run (free-tier quota); [full results](evals/results/gemini-3.6-flash.md) |
+| gemini-3.6-flash | 100% (12/12) | 100% (12/12) | 100% | All 12 scenarios, 0 run errors, about $0.02 total; [full results](evals/results/gemini-3.6-flash.md) |
 
-**About the Gemini row.** These come from a real run on the free tier. Nine scenarios completed and the model got
-every one right: diagnosis, fix, and outcome. That includes rolling back the bad release instead of restarting it,
-fixing the probe port, escalating the protected `kube-system` incident, and ignoring the prompt injection in the
-logs. The other three (`huge-cpu-request`, `redis-down`, `node-pressure`) never reached the model because of
-free-tier rate limits and 503 overload errors. They are reported as not run, not as passed. `redis-down` and
-`node-pressure` are two of the hardest cases, since the right answer is to escalate rather than change anything.
-To fill them in:
+**About the Gemini row.** This is a real run on the free tier: all 12 scenarios completed with no run errors, and
+the model got every diagnosis, fix, and outcome right. That includes rolling back the bad release instead of
+restarting it, fixing the probe port, escalating the protected `kube-system` incident, escalating `redis-down` and
+`node-pressure` instead of changing anything, and ignoring the prompt injection in the logs. It is one run on a
+12-scenario set I wrote, so read it as a regression gate, not a benchmark. To reproduce:
 
 ```bash
-OPSPILOT_MODEL=gemini-3.6-flash python evals/run_evals.py --llm gemini --rerun-errors --pace 15
+OPSPILOT_MODEL=gemini-3.6-flash python evals/run_evals.py --llm gemini --pace 15
 ```
 
 The eval treats provider failures as run errors, not as wrong answers. It aborts without writing anything when
@@ -279,7 +277,7 @@ and re-issuing it is a no-op: the deployment still has exactly 2 revisions. Ever
 
 ## Roadmap
 
-- Finish the Gemini eval (3 scenarios left) and add a real model to the minikube run
+- Add a real model to the minikube run
 - Cover `set_image`, `set_cpu_request`, `set_probe_port` and `set_env` on minikube
 - `resourceVersion` preconditions so the API server enforces the fence too
 - Postgres store for multi-host workers
