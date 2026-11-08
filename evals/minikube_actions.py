@@ -3,6 +3,7 @@ set_probe_port.
 
   minikube start
   python evals/minikube_actions.py [--context minikube]
+  python evals/minikube_actions.py --llm gemini    # real model diagnoses real broken workloads (needs GEMINI_API_KEY)
 
 The keyword baseline cannot choose these fixes, so a scripted "oracle" model returns the correct proposal for each
 workload. That is intentional: this script tests the actuation path (guardrails against live `describe` output,
@@ -20,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
-from minikube_e2e import BAD, GOOD, NS, Kube, deployment, run_incident, setup  # noqa: E402
+from minikube_e2e import BAD, CASES as BASE_CASES, GOOD, NS, Kube, deployment, run_incident, setup  # noqa: E402
 from opspilot.bootstrap import ROOT  # noqa: E402
 from opspilot.cluster import KubectlCluster  # noqa: E402
 from opspilot.llm import LLMResult, _section  # noqa: E402
@@ -75,37 +76,50 @@ CASES = [
 ]
 
 
+def real_model_cases():
+    """Real-model mode: the four cases above plus the baseline cases, all expected to be fixed (web-probe too,
+    which the keyword baseline cannot do). The model gets no hint about which action to use."""
+    extra = [(n, m, b, sym, None, chk) for n, m, b, sym, _exp, chk in BASE_CASES]
+    return CASES + extra
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--context", default="minikube")
+    ap.add_argument("--llm", choices=["oracle", "gemini"], default="oracle")
     a = ap.parse_args()
+    cases = CASES if a.llm == "oracle" else real_model_cases()
     k = Kube(a.context)
     k("delete", "namespace", NS, "--ignore-not-found", "--wait=true")
     k("create", "namespace", NS)
-    for name, manifest, brk, symptom, *_ in CASES:
+    for name, manifest, brk, symptom, *_ in cases:
         print(f"breaking {name} ...", flush=True)
         setup(k, name, manifest, brk, symptom)
 
-    llm = OracleLLM({c[0]: c[4] for c in CASES})
+    if a.llm == "gemini":
+        from opspilot.llm import GeminiLLM
+        llm = GeminiLLM()
+    else:
+        llm = OracleLLM({c[0]: c[4] for c in CASES})
     cluster, rag = KubectlCluster(context=a.context), RunbookIndex.from_dir(ROOT / "runbooks")
     results = []
     with tempfile.TemporaryDirectory() as d:
         store = Store(Path(d) / "actions.db")
-        for name, _, _, _, plan, check in CASES:
+        for name, _, _, _, plan, check in cases:
             t0 = time.time()
             jid, _ = run_incident(store, cluster, rag, name, llm=llm)
             state = (store.latest_checkpoint(jid) or (None, {}))[1]
             dep = k.deploy(name)
             row = {"workload": name, "action": (state.get("proposal") or {}).get("action"),
-                   "expected_action": plan[1], "outcome": state.get("outcome"), "live_check": bool(check(dep)),
+                   "expected_action": plan and plan[1], "outcome": state.get("outcome"), "live_check": bool(check(dep)),
                    "annotation": dep["metadata"].get("annotations", {}).get("opspilot.io/last-change"),
                    "seconds": round(time.time() - t0, 1), "error": store.get_job(jid)["error"]}
-            row["ok"] = (row["outcome"] == "resolved" and row["action"] == plan[1] and row["live_check"]
-                         and bool(row["annotation"]))
+            row["ok"] = (row["outcome"] == "resolved" and (plan is None or row["action"] == plan[1])
+                         and row["live_check"] and bool(row["annotation"]))
             results.append(row)
             print(json.dumps(row), flush=True)
-    out = HERE / "results" / f"minikube-actions-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    out.write_text(json.dumps({"context": a.context, "results": results}, indent=2))
+    out = HERE / "results" / f"minikube-{a.llm}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out.write_text(json.dumps({"context": a.context, "llm": getattr(llm, "model", a.llm), "results": results}, indent=2))
     print(f"\n{sum(r['ok'] for r in results)}/{len(results)} passed; wrote {out.relative_to(ROOT)}")
     sys.exit(0 if all(r["ok"] for r in results) else 1)
 
