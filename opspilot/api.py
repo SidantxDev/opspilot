@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .policy import NAME_RE
-from .store import Store
+from .store import Store, open_store
 
 STATIC = Path(__file__).resolve().parent / "static"
 STATUSES = "^(queued|running|waiting_approval|succeeded|failed)$"
@@ -63,7 +63,7 @@ def prometheus(m):
 
 
 def create_app(store: Store = None, scenarios=None):
-    store = store or Store(os.environ.get("OPSPILOT_DB", "opspilot.db"))
+    store = store or open_store(os.environ.get("OPSPILOT_DB", "opspilot.db"))
     if scenarios is None and os.environ.get("OPSPILOT_CLUSTER", "").startswith("demo"):
         from .bootstrap import load_scenarios
         scenarios = load_scenarios()

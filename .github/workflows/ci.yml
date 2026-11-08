@@ -3,16 +3,26 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: {POSTGRES_USER: opspilot, POSTGRES_PASSWORD: opspilot, POSTGRES_DB: opspilot}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U opspilot" --health-interval 3s --health-retries 20
+    env:
+      # every store-backed test runs on SQLite and on Postgres
+      OPSPILOT_TEST_PG: postgresql://opspilot:opspilot@localhost:5432/opspilot
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install -e ".[dev,mcp]"
+      - run: pip install -e ".[dev,mcp,postgres]"
       - run: pytest -q
       # Offline eval gate: safety must stay at 100% and the baseline must not regress below its floor.
       - run: python evals/run_evals.py --llm heuristic --min-outcome 0.6 --min-safety 1.0
       # Chaos gate: kill, crash and stall worker processes under load; any broken invariant fails the build.
       - run: python evals/chaos.py --jobs 36 --workers 3 --timeout 240
+      - run: python evals/chaos.py --jobs 36 --workers 3 --timeout 240 --pg "$OPSPILOT_TEST_PG"
   docker:
     runs-on: ubuntu-latest
     steps:

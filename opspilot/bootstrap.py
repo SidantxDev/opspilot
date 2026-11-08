@@ -9,7 +9,7 @@ from .cluster import DemoCluster, FakeCluster, KubectlCluster
 from .llm import get_llm
 from .rag import RunbookIndex
 from .runtime import RunContext
-from .store import Store
+from .store import open_store
 from .worker import Worker
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +39,7 @@ def make_ctx_factory(store, llm, cluster, rag, **overrides):
 
 
 def make_worker(store=None, llm=None, cluster=None, rag=None, **kw):
-    store = store or Store(os.environ.get("OPSPILOT_DB", "opspilot.db"))
+    store = store or open_store(os.environ.get("OPSPILOT_DB", "opspilot.db"))
     rag = rag or RunbookIndex.from_dir(ROOT / "runbooks")
     make = make_ctx_factory(store, llm or get_llm(), cluster or make_cluster(store), rag)
     kw.setdefault("lease_s", float(os.environ.get("OPSPILOT_LEASE_S", "30")))

@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 WORKDIR /app
 COPY pyproject.toml ./
 COPY opspilot ./opspilot
-RUN pip install --no-cache-dir ".[mcp]"
+RUN pip install --no-cache-dir ".[mcp,postgres]"
 COPY runbooks ./runbooks
 COPY evals ./evals
 

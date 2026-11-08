@@ -12,7 +12,7 @@ from . import agents
 from .bootstrap import ROOT, make_cluster
 from .policy import NAME_RE, validate
 from .rag import RunbookIndex
-from .store import Store
+from .store import open_store
 
 TENANT = os.environ.get("OPSPILOT_MCP_TENANT", "mcp")
 
@@ -74,7 +74,7 @@ def build_server(tools=None):
         from mcp.server.mcpserver import MCPServer as Server
     except ImportError:                         # mcp 1.x
         from mcp.server.fastmcp import FastMCP as Server
-    tools = tools or Tools(Store(os.environ.get("OPSPILOT_DB", "opspilot.db")), make_cluster(),
+    tools = tools or Tools(open_store(os.environ.get("OPSPILOT_DB", "opspilot.db")), make_cluster(),
                            RunbookIndex.from_dir(ROOT / "runbooks"))
     server = Server("opspilot", instructions=__doc__)
     for name in ("get_workload_evidence", "search_runbooks", "check_proposal", "open_incident", "get_incident"):

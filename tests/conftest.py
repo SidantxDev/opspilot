@@ -1,5 +1,7 @@
+import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -11,13 +13,23 @@ from opspilot.bootstrap import ROOT, load_scenarios, make_ctx_factory  # noqa: E
 from opspilot.cluster import FakeCluster  # noqa: E402
 from opspilot.llm import HeuristicLLM  # noqa: E402
 from opspilot.rag import RunbookIndex  # noqa: E402
-from opspilot.store import Store  # noqa: E402
+from opspilot.store import PgStore, Store  # noqa: E402
+
+# Set OPSPILOT_TEST_PG=postgresql://... to run every store-backed test against Postgres as well as SQLite.
+PG = os.environ.get("OPSPILOT_TEST_PG")
+BACKENDS = ["sqlite"] + (["postgres"] if PG else [])
 from opspilot.worker import Worker  # noqa: E402
 
 
-@pytest.fixture
-def store(tmp_path):
-    return Store(tmp_path / "t.db")
+@pytest.fixture(params=BACKENDS)
+def store(request, tmp_path):
+    if request.param == "sqlite":
+        yield Store(tmp_path / "t.db")
+        return
+    s = PgStore(PG, schema=f"t_{uuid.uuid4().hex[:12]}")
+    yield s
+    s.drop_schema()
+    s.close()
 
 
 @pytest.fixture(scope="session")

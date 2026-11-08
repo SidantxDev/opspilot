@@ -1,0 +1,26 @@
+{
+  "summary": {
+    "jobs": 200,
+    "workers": 6,
+    "seconds": 109.3,
+    "processes_killed": 151,
+    "processes_crashed_or_exited": 92,
+    "processes_started": 249,
+    "zombie_writes_refused": 20,
+    "lease_losses": 20,
+    "resumes_from_checkpoint": 322,
+    "fixes_committed_exactly_once": 184,
+    "cluster_effects": 205,
+    "identical_reissues_after_crash_in_apply_window": 21,
+    "apply_skipped_already_committed": 1,
+    "outcomes": {
+      "resolved": 117,
+      "fix_failed": 67,
+      "escalated": 16
+    },
+    "invariant_violations": 0,
+    "seed": 7,
+    "backend": "postgres"
+  },
+  "violations": []
+}

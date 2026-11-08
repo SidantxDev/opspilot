@@ -7,7 +7,7 @@ guardrails, **waits for a human to approve it**, applies it, verifies the rollou
 The interesting part is not the LLM call. It is everything around it that makes an agent safe to point at
 production:
 
-- **Durable execution.** Every step is checkpointed to SQLite. Kill the worker at any point and another one
+- **Durable execution.** Every step is checkpointed to the store (SQLite on one host, Postgres across many). Kill the worker at any point and another one
   resumes from the last completed step, without redoing it and without applying a fix twice.
 - **Leases, fencing tokens and an action ledger.** Workers claim jobs under a heartbeated lease, and every claim
   gets a new fencing token. A cluster change is written to a ledger as an intent before it happens and committed
@@ -43,10 +43,11 @@ person clicks approve.*
                   |                                        |
                   v                                        v
    +-----------------------------+        +-------------------------------+
-   |  FastAPI (api.py)           |        |  SQLite store (store.py)      |
+   |  FastAPI (api.py)           |        |  Store (store.py)             |
    |  validation, idempotency,   |------->|  jobs (leases, attempts)      |
    |  tenant header              |        |  checkpoints, events, usage   |
-   +-----------------------------+        |  approvals                    |
+   +-----------------------------+        |  approvals, action ledger     |
+                                          |  SQLite or Postgres           |
                                           +-------------------------------+
                                                    ^        |
                                    claim / heartbeat|        | resume from checkpoint
@@ -93,7 +94,8 @@ Without Docker:
 
 ```bash
 pip install -e ".[dev,mcp]"
-python -m pytest -q                       # 32 tests, fully offline
+python -m pytest -q                       # fully offline, SQLite
+OPSPILOT_TEST_PG=postgresql://... python -m pytest -q   # store-backed tests also run on Postgres
 
 export OPSPILOT_CLUSTER=demo OPSPILOT_LLM=heuristic
 python -m opspilot api --port 8000 &
@@ -115,7 +117,7 @@ context (or `OPSPILOT_KUBE_CONTEXT`).
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `OPSPILOT_DB` | `opspilot.db` | SQLite path shared by the API and the workers |
+| `OPSPILOT_DB` | `opspilot.db` | SQLite path, or a `postgresql://` URL (needs `pip install -e ".[postgres]"`), shared by the API and the workers |
 | `OPSPILOT_LLM` | auto | `gemini`, `anthropic`, or `heuristic`; auto picks by which API key is set |
 | `OPSPILOT_MODEL` | `gemini-3.8-flash` / `claude-sonnet-5-5` | Model name for the chosen provider |
 | `OPSPILOT_CLUSTER` | `kubectl` | `kubectl`; `demo` replays every recorded incident by namespace/workload; `demo:<id>` replays one |
@@ -220,6 +222,40 @@ checkpoint on top of the final one. The cluster was never changed twice, because
 fenced, but the recorded outcome was lost. Checkpoint writes are now fenced as well, and
 `test_zombie_cannot_overwrite_the_final_checkpoint` reproduces the bug. A smaller chaos run gates CI.
 
+## Postgres backend
+
+`OPSPILOT_DB=postgresql://...` moves the queue, checkpoints, ledger and approvals to Postgres, so workers can
+run on many hosts. The contract and the SQL are the same as the SQLite store; what changes is how atomicity is
+obtained. SQLite serializes every write transaction, so a read-then-write is atomic for free. Postgres runs
+transactions concurrently, so:
+
+- `claim()` is `SELECT ... ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`: N pollers never block on or double-claim
+  a row, and the claim scan uses a partial index over live jobs only.
+- Every guarded read-then-write (the lease and fence check before a ledger write or checkpoint, an approval,
+  checkpoint `seq` allocation) first takes `FOR UPDATE` on the job row. A claim bumps the fence while holding the
+  same lock, so a commit from the old owner either lands before the fence moves or is refused. Never both.
+- Enqueue uses `INSERT ... ON CONFLICT DO NOTHING RETURNING id`, so duplicate alert deliveries that race each
+  other still produce one job.
+
+```bash
+docker compose -f compose.yaml -f compose.postgres.yaml up --build --scale worker=3
+```
+
+`tests/test_concurrency.py` makes these races happen on purpose (8 threads draining one queue, 8 duplicate
+deliveries, 6 humans approving at once, and 30 rounds of a reclaim colliding with a zombie's commit at the lease
+boundary, checking that both orders occur). Removing `FOR UPDATE` from the Postgres store makes the suite fail.
+
+| Chaos run on Postgres, 200 incidents, 6 workers | |
+|---|---|
+| Worker processes hard-killed / self-crashed | 151 / 92 |
+| Resumes from checkpoint | 322 |
+| Zombie writes refused by the fence | 20 |
+| Fixes committed in the ledger | 184, each exactly once |
+| Re-issued changes after a crash in the apply window | 21, all identical to the original |
+| Invariant violations | **0** ([results](evals/results/chaos-pg-20261109-025531.json)) |
+
+CI runs every store-backed test on both backends and a chaos gate on each.
+
 ## On a real cluster (minikube)
 
 `evals/minikube_e2e.py` breaks real deployments in a throwaway namespace and lets OpsPilot fix them through
@@ -291,6 +327,8 @@ the patch path ([1](evals/results/minikube-20261108-173907.json), [2](evals/resu
   `StaleWrite`, which fails the job at once instead of retrying
 - The fencing token moves on every claim, including across approval pauses; old databases migrate in place
 - Only one worker can claim a job; an expired lease is reclaimed and the old owner is fenced
+- Under real thread races on Postgres: concurrent claimers never share a job, duplicate deliveries make one job,
+  only one of several racing approvals lands, and a zombie's commit never lands after a reclaim moved the fence
 - A poison job stops after `max_attempts`; retries respect exponential backoff
 - Enqueue is idempotent per tenant and idempotency key
 - Rejecting the proposal never touches the cluster; an approval is accepted only once and only while waiting
@@ -312,8 +350,9 @@ the patch path ([1](evals/results/minikube-20261108-173907.json), [2](evals/resu
 - **`set_env` cannot know the value.** On a real cluster it sets the missing variable to an empty string,
   which rarely fixes anything. A real deployment should map this action to a secret or config reference
   chosen by the approver.
-- **SQLite means one machine.** Leases and fencing are correct, but the store is a single file. Postgres with
-  `SELECT ... FOR UPDATE SKIP LOCKED` is the obvious next step for multiple hosts.
+- **Leases use each worker's wall clock.** Across hosts, clock skew can make a lease look expired early and
+  cause an unnecessary reclaim. The fence keeps that safe (the old owner is refused), but it costs a retry; using
+  the database clock for leases would remove it. Postgres is tested as a single instance, not with failover.
 - **The precondition is pinned when the change is applied, not when it is approved.** A spec edit between
   approval and apply is not detected; one after the intent is. Pinning at investigation time would need the
   evidence step to read the object as JSON as well as `describe` it.
@@ -325,5 +364,4 @@ the patch path ([1](evals/results/minikube-20261108-173907.json), [2](evals/resu
 ## Roadmap
 
 - Add a real model to the minikube run
-- Postgres store for multi-host workers
 - Dense embeddings and hybrid retrieval once the runbook corpus grows

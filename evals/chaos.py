@@ -2,6 +2,7 @@
 
   python evals/chaos.py                          # 60 incidents, 4 workers, kills + crashes + stalls
   python evals/chaos.py --jobs 200 --workers 6 --kill-every 0.4
+  python evals/chaos.py --pg postgresql://user:pw@localhost/opspilot   # same run on Postgres (fresh schema)
 
 Three kinds of failure are injected:
   * kill   - the parent hard-kills a random worker process (TerminateProcess / SIGKILL) and starts a new one
@@ -38,7 +39,7 @@ from opspilot.bootstrap import ROOT, load_scenarios, make_worker  # noqa: E402
 from opspilot.cluster import DemoCluster  # noqa: E402
 from opspilot.llm import HeuristicLLM  # noqa: E402
 from opspilot.rag import RunbookIndex  # noqa: E402
-from opspilot.store import Store  # noqa: E402
+from opspilot.store import PgStore, Store  # noqa: E402
 
 TERMINAL = ("succeeded", "failed")
 
@@ -65,9 +66,13 @@ class RecordingCluster:
         return out
 
 
+def open_db(a):
+    return PgStore(a.pg, schema=a.pg_schema, pool_size=2) if a.pg else Store(a.db)
+
+
 def child(a):
     rng = random.Random(a.seed)
-    store = Store(a.db)
+    store = open_db(a)
     cluster = RecordingCluster(DemoCluster(load_scenarios(), store), a.effects)
     w = make_worker(store=store, llm=HeuristicLLM(), cluster=cluster, lease_s=a.lease, backoff_s=0.05)
     frozen = {"on": False}
@@ -109,6 +114,8 @@ def spawn(a, i, env):
     args = [sys.executable, str(Path(__file__).resolve()), "--child", "--db", a.db, "--effects", a.effects,
             "--lease", str(a.lease), "--crash-rate", str(a.crash_rate), "--stall-rate", str(a.stall_rate),
             "--seed", str(a.seed * 1000 + i)]
+    if a.pg:
+        args += ["--pg", a.pg, "--pg-schema", a.pg_schema]
     return subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -163,6 +170,8 @@ def check(store, effects_path, job_scenario, calm):
 def parent(a):
     work = Path(tempfile.mkdtemp(prefix="opspilot-chaos-"))
     a.db, a.effects = str(work / "chaos.db"), str(work / "effects.db")
+    if a.pg:
+        a.pg_schema = f"chaos_{int(time.time())}"
     c = sqlite3.connect(a.effects)
     c.execute("CREATE TABLE effects(id INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, pid INTEGER, ns TEXT, "
               "workload TEXT, action TEXT, params TEXT, ts REAL)")
@@ -173,7 +182,7 @@ def parent(a):
     scenarios = load_scenarios()
     print(f"calm reference run over {len(scenarios)} scenarios ...")
     calm = calm_outcomes(scenarios)
-    store = Store(a.db)
+    store = open_db(a)
     rng = random.Random(a.seed)
     job_scenario = {}
     for i in range(a.jobs):
@@ -225,12 +234,12 @@ def parent(a):
         "identical_reissues_after_crash_in_apply_window": stats["reissued_identical"],
         "apply_skipped_already_committed": stats["apply_skipped"],
         "outcomes": {k.split(":", 1)[1]: v for k, v in stats.items() if k.startswith("outcome:")},
-        "invariant_violations": len(problems), "seed": a.seed,
+        "invariant_violations": len(problems), "seed": a.seed, "backend": "postgres" if a.pg else "sqlite",
     }
     print(json.dumps(summary, indent=2))
     for p in problems[:20]:
         print("VIOLATION:", p)
-    out = HERE / "results" / f"chaos-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out = HERE / "results" / f"chaos-{'pg-' if a.pg else ''}{time.strftime('%Y%m%d-%H%M%S')}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps({"summary": summary, "violations": problems}, indent=2))
     print(f"wrote {out.relative_to(ROOT)}")
@@ -245,6 +254,8 @@ def main():
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--db")
     ap.add_argument("--effects")
+    ap.add_argument("--pg", help="run the store on this Postgres DSN instead of SQLite")
+    ap.add_argument("--pg-schema", help=argparse.SUPPRESS)
     ap.add_argument("--jobs", type=int, default=60)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--lease", type=float, default=1.0)
