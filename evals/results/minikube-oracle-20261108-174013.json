@@ -1,0 +1,50 @@
+{
+  "context": "minikube",
+  "llm": "scripted-oracle",
+  "results": [
+    {
+      "workload": "cpu-hog",
+      "action": "set_cpu_request",
+      "expected_action": "set_cpu_request",
+      "outcome": "resolved",
+      "live_check": true,
+      "annotation": "job-1-f2",
+      "seconds": 3.9,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "needs-env",
+      "action": "set_env",
+      "expected_action": "set_env",
+      "outcome": "resolved",
+      "live_check": true,
+      "annotation": "job-2-f2",
+      "seconds": 3.4,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "bad-tag",
+      "action": "set_image",
+      "expected_action": "set_image",
+      "outcome": "resolved",
+      "live_check": true,
+      "annotation": "job-3-f2",
+      "seconds": 3.6,
+      "error": null,
+      "ok": true
+    },
+    {
+      "workload": "probe-port",
+      "action": "set_probe_port",
+      "expected_action": "set_probe_port",
+      "outcome": "resolved",
+      "live_check": true,
+      "annotation": "job-4-f2",
+      "seconds": 3.9,
+      "error": null,
+      "ok": true
+    }
+  ]
+}

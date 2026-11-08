@@ -6,7 +6,11 @@ from typing import Any, Callable
 from .graph import LeaseLost
 
 
-class BudgetExceeded(Exception):
+class PermanentError(Exception):
+    """Retrying cannot help; the worker fails the job instead of backing off."""
+
+
+class BudgetExceeded(PermanentError):
     pass
 
 

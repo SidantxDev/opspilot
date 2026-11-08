@@ -14,6 +14,9 @@ production:
   after, both checked against the token. A worker that froze past its lease and wakes up as a zombie is refused
   before it can touch the cluster; a crash mid-change re-issues the *same* concrete change; a crash after the
   commit never touches the cluster again.
+- **The API server enforces the fence too.** Every change is one JSON patch pinned to the deployment's
+  `resourceVersion`, with the attribution annotation in the same write. A late call from a frozen worker gets a
+  409 and is recognised as already applied; a hand edit made after the intent was recorded is never overwritten.
 - **Proven under chaos and on a real cluster.** A chaos run hard-kills worker processes at random under load,
   crashes them inside the apply window and freezes them past their lease, then checks five invariants. A
   minikube run breaks real deployments and lets OpsPilot fix them through `kubectl`.
@@ -250,12 +253,42 @@ not of diagnosis, which the eval harness measures:
 
 [Results](evals/results/minikube-actions-20261107-185438.json).
 
+### The fence, enforced by the API server
+
+The database fence stops a zombie from *starting* a change, but a worker can freeze inside its single `kubectl`
+call and have it land late. So `prepare` turns every action into one declarative JSON patch, pinned to the
+`resourceVersion` it was computed against, and the attribution annotation goes in the same write. On a 409:
+
+| What changed the object | What OpsPilot does |
+|---|---|
+| Nothing (precondition holds) | the patch lands; the version moves on, so only one writer can ever win |
+| Only status or annotations (`metadata.generation` unchanged) | re-pin to the new version and send again |
+| This job, under any fence | already applied: report it, do not write again |
+| Anyone else changed the spec | `StaleWrite`: fail the job without retrying, keep their change |
+
+The second row came from the real cluster. Right after a rollout the deployment controller bumps
+`resourceVersion` with status updates and its revision annotation, and the first version of this code read that
+as a conflict. `evals/minikube_preconditions.py` runs the three races on minikube, counting writes with
+`metadata.generation`:
+
+| Race | Result |
+|---|---|
+| `zombie`: w2 applies the ledgered change, then frozen w1's identical call arrives | 1 write, late call reports `already applied by job-1-f2` |
+| `reissue`: same job re-sends after a crash under a new fence | 1 write |
+| `human`: `kubectl scale --replicas=5` after the intent was recorded | `StaleWrite`, replicas stay 5 |
+
+[Results](evals/results/minikube-preconditions-20261108-173350.json). The 5/5 and 4/4 suites above were re-run on
+the patch path ([1](evals/results/minikube-20261108-173907.json), [2](evals/results/minikube-oracle-20261108-174013.json)).
+
 ## What the tests prove
 
 - A worker crash after any node resumes from the checkpoint without re-running that node
 - A crash after the ledger commit never touches the cluster again; a crash inside the apply window re-issues the
   identical concrete change; a rollback is resolved to a revision once, so a resumed rollback cannot drift
 - A zombie worker (frozen past its lease while another worker took over) is refused before it changes the cluster
+- Against a fake API server with real 409 semantics: every action is one pinned patch, a late or re-issued call
+  writes nothing, controller status writes re-pin instead of failing, and a foreign spec change raises
+  `StaleWrite`, which fails the job at once instead of retrying
 - The fencing token moves on every claim, including across approval pauses; old databases migrate in place
 - Only one worker can claim a job; an expired lease is reclaimed and the old owner is fenced
 - A poison job stops after `max_attempts`; retries respect exponential backoff
@@ -281,10 +314,9 @@ not of diagnosis, which the eval harness measures:
   chosen by the approver.
 - **SQLite means one machine.** Leases and fencing are correct, but the store is a single file. Postgres with
   `SELECT ... FOR UPDATE SKIP LOCKED` is the obvious next step for multiple hosts.
-- **Fencing stops at the database.** The token is checked when the intent is recorded and when it is committed,
-  so a zombie cannot *start* a change. A worker that freezes after recording the intent but before its single
-  `kubectl` call returns can still land that one call late. Closing that gap fully needs the API server to check the token (for example a
-  `resourceVersion` precondition on the patch).
+- **The precondition is pinned when the change is applied, not when it is approved.** A spec edit between
+  approval and apply is not detected; one after the intent is. Pinning at investigation time would need the
+  evidence step to read the object as JSON as well as `describe` it.
 - **Retrieval is lexical.** BM25 is fine for 8 runbooks; a larger corpus would want dense embeddings and hybrid
   ranking.
 - **No auth on the API.** The tenant comes from a header. Put it behind your gateway.
@@ -293,6 +325,5 @@ not of diagnosis, which the eval harness measures:
 ## Roadmap
 
 - Add a real model to the minikube run
-- `resourceVersion` preconditions so the API server enforces the fence too
 - Postgres store for multi-host workers
 - Dense embeddings and hybrid retrieval once the runbook corpus grows

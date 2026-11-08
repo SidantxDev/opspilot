@@ -5,7 +5,7 @@ import time
 import uuid
 
 from .graph import LeaseLost
-from .runtime import BudgetExceeded
+from .runtime import BudgetExceeded, PermanentError
 
 
 class Worker:
@@ -41,6 +41,10 @@ class Worker:
         except BudgetExceeded as e:        # retrying cannot help
             self.store.add_event(jid, "budget_exceeded", data={"error": str(e)})
             self.store.finish(jid, self.id, "failed", str(e))
+        except PermanentError as e:        # e.g. StaleWrite: the same patch would conflict again
+            err = f"{type(e).__name__}: {e}"
+            self.store.add_event(jid, "error", data={"error": err, "attempt": job["attempts"], "permanent": True})
+            self.store.finish(jid, self.id, "failed", err)
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
             self.store.add_event(jid, "error", data={"error": err, "attempt": job["attempts"]})

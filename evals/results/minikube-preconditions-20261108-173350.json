@@ -1,0 +1,24 @@
+{
+  "context": "minikube",
+  "results": [
+    {
+      "race": "zombie",
+      "late_call": "already applied by job-1-f2",
+      "writes": 1,
+      "annotation": "job-1-f2",
+      "ok": true
+    },
+    {
+      "race": "reissue",
+      "second_call": "already applied by job-2-f1",
+      "writes": 1,
+      "ok": true
+    },
+    {
+      "race": "human",
+      "error": "opspilot-e2e/human spec changed after generation 1 (last change: not by OpsPilot); refusing to overwrite it",
+      "replicas": 5,
+      "ok": true
+    }
+  ]
+}
